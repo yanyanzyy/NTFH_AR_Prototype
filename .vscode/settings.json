@@ -68,6 +68,5 @@
         "*.slnx": "*.csproj"
     },
     "dotnet.defaultSolution": "NTFH_AR_Prototype.slnx",
-    "dotnet.enableWorkspaceBasedDevelopment": false,
-    "omnisharp.dotnetPath": "/opt/homebrew/bin/dotnet"
+    "dotnet.enableWorkspaceBasedDevelopment": false
 }

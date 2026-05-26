@@ -528,6 +528,9 @@ PlayerSettings:
   - m_BuildTarget: Android
     m_StaticBatching: 1
     m_DynamicBatching: 0
+  - m_BuildTarget: Standalone
+    m_StaticBatching: 1
+    m_DynamicBatching: 0
   m_BuildTargetShaderSettings: []
   m_BuildTargetGraphicsJobs:
   - m_BuildTarget: MacStandaloneSupport
@@ -583,7 +586,7 @@ PlayerSettings:
   enableCrashReportAPI: 0
   cameraUsageDescription: 
   locationUsageDescription: 
-  microphoneUsageDescription: 
+  microphoneUsageDescription: This is for Meta Quest 3
   bluetoothUsageDescription: 
   macOSTargetOSVersion: 12.0
   switchNMETAOverride: 

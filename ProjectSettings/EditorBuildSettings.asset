@@ -8,16 +8,12 @@ EditorBuildSettings:
   - enabled: 0
     path: Assets/Scenes/SampleScene.unity
     guid: 99c9720ab356a0642a771bea13969a05
-  - enabled: 0
+  - enabled: 1
     path: Assets/MR_TestScene.unity
     guid: b4fec541ec06eb24d904ee557cd9f1d9
-  - enabled: 1
-    path: Assets/Scenes/ArmDetectionScene.unity
-    guid: 5d80259b113304bacbf49d5ff4b8ea22
   m_configObjects:
     Unity.XR.Oculus.Settings: {fileID: 11400000, guid: ee067a59ed36ade4f8a66621b01d0baf, type: 2}
-    com.unity.dt.app-ui: {fileID: 11400000, guid: 1b1c20d82303e4b5781c3ef50ac1449f, type: 2}
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
-    com.unity.xr.arfoundation.simulation_settings: {fileID: 11400000, guid: 47413d8464eb44012a85361fd26f0b66, type: 2}
+    com.unity.xr.arfoundation.simulation_settings: {fileID: 11400000, guid: eb4d03f381f0249f7826fd6f3f2edd3c, type: 2}
     com.unity.xr.management.loader_settings: {fileID: 11400000, guid: 800ebb1eba30cb24599d75d7f49409af, type: 2}
-    com.unity.xr.openxr.settings4: {fileID: 11400000, guid: 0d1bc836da85b4fb7b6b522d4995f328, type: 2}
+    com.unity.xr.openxr.settings4: {fileID: 11400000, guid: 6cc9fb01258a449f5b861ce4c0ef5409, type: 2}
