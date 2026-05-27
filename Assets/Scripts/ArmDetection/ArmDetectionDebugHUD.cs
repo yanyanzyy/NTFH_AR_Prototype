@@ -54,11 +54,15 @@ namespace ARArmDetection
             int  personCount = _manager != null ? _manager.LastPersonCount : _detectionCount;
             bool foundArm    = _manager != null ? _manager.LastFoundArm    : _detectionCount > 0;
 
-            string camStatus = _cameraSource != null ? _cameraSource.CameraManagerStatus : "—";
-            string mgrStatus = _manager     != null ? _manager.ManagerStatus            : "<color=red>(manager not assigned!)</color>";
-            string armStatus = _manager     != null ? _manager.LastArmStatus            : "—";
-            string modeStr   = (_manager != null && _manager.IsArmOnlyMode)
+            string camStatus  = _cameraSource != null ? _cameraSource.CameraManagerStatus : "—";
+            string mgrStatus  = _manager     != null ? _manager.ManagerStatus            : "<color=red>(manager not assigned!)</color>";
+            string armStatus  = _manager     != null ? _manager.LastArmStatus            : "—";
+            string modeStr    = (_manager != null && _manager.IsArmOnlyMode)
                 ? "<color=orange>ARM-ONLY</color>" : "<color=lime>Normal</color>";
+            bool   calibrated = _cameraSource != null && _cameraSource.HasCalibratedProjection;
+            string projStr    = calibrated
+                ? "<color=lime>CALIBRATED</color> (PCA intrinsics)"
+                : "<color=red>FALLBACK</color> (FOV heuristic — overlay may be misplaced)";
 
             _label.text =
                 $"=== ARM DETECTION DEBUG ===\n" +
@@ -67,6 +71,7 @@ namespace ARArmDetection
                 $"Camera    : {camStatus}\n" +
                 $"HasFrame  : {(hasFrame   ? "<color=lime>YES</color>" : "<color=red>NO</color>")}  " +
                 $"{(_cameraSource != null ? $"{_cameraSource.Width}x{_cameraSource.Height}" : "—")}\n" +
+                $"Projection: {projStr}\n" +
                 $"Model     : {(modelReady ? "<color=lime>READY</color>" : "<color=red>NOT READY</color>")}\n" +
                 $"Inference : {inferCount} runs\n" +
                 $"Persons   : {personCount} detected\n" +
@@ -90,7 +95,7 @@ namespace ARArmDetection
             canvasGO.AddComponent<GraphicRaycaster>();
 
             var rt = canvasGO.GetComponent<RectTransform>();
-            rt.sizeDelta      = new Vector2(560, 360);
+            rt.sizeDelta      = new Vector2(640, 400);
             rt.localPosition  = Vector3.zero;
             rt.localRotation  = Quaternion.identity;
             rt.localScale     = Vector3.one * 0.003f; // 3 mm per canvas unit → ~1.2 m wide

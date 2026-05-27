@@ -23,7 +23,7 @@ Shader "ArmDetection/ArmOverlayUnlit"
             Name "ArmOverlay"
             ZWrite On
             ZTest  LEqual
-            Cull   Back
+            Cull   Off
 
             HLSLPROGRAM
             #pragma vertex   vert
@@ -46,6 +46,7 @@ Shader "ArmDetection/ArmOverlayUnlit"
             struct Varyings
             {
                 float4 positionHCS : SV_POSITION;
+                UNITY_VERTEX_INPUT_INSTANCE_ID
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -53,6 +54,7 @@ Shader "ArmDetection/ArmOverlayUnlit"
             {
                 Varyings OUT;
                 UNITY_SETUP_INSTANCE_ID(IN);
+                UNITY_TRANSFER_INSTANCE_ID(IN, OUT);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(OUT);
                 OUT.positionHCS = TransformObjectToHClip(IN.positionOS.xyz);
                 return OUT;
@@ -60,6 +62,7 @@ Shader "ArmDetection/ArmOverlayUnlit"
 
             half4 frag(Varyings IN) : SV_Target
             {
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(IN);
                 return _BaseColor;
             }
             ENDHLSL

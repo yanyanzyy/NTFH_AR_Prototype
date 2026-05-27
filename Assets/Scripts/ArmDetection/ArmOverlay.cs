@@ -19,6 +19,10 @@ namespace ARArmDetection
         [SerializeField] private float  _thicknessRatio  = 0.22f;
         [SerializeField] private float  _minThickness    = 0.05f;
         [SerializeField] private float  _maxThickness    = 0.18f;
+        [Tooltip("Debug: force the overlay visible even when projected arm length is tiny " +
+                 "(< 0.05 m). Useful in Editor where fallback projection may produce short arms. " +
+                 "Disable before shipping.")]
+        [SerializeField] private bool   _forceVisible    = false;
 
         private Transform _quad;
         private Material  _material;
@@ -72,8 +76,23 @@ namespace ARArmDetection
 
             if (length < 0.05f)
             {
-                _quad.gameObject.SetActive(false);
-                return;
+                if (!_forceVisible)
+                {
+                    Debug.LogWarning($"[ArmOverlay] Arm too short ({length:F3} m) — quad hidden. " +
+                                     $"Shoulder={shoulder} Wrist={wrist}. " +
+                                     "Check Projection line in debug HUD: FALLBACK means wrong camera is being used. " +
+                                     "Enable _forceVisible on ArmOverlay to override.");
+                    _quad.gameObject.SetActive(false);
+                    return;
+                }
+                // Force-visible: use the midpoint + a 0.6 m stand-in arm so the quad is easy to spot.
+                var standInMid = (shoulder + wrist) * 0.5f;
+                var standInDir = armDir.sqrMagnitude > 1e-6f ? armDir.normalized : Vector3.up;
+                shoulder = standInMid - standInDir * 0.3f;
+                wrist    = standInMid + standInDir * 0.3f;
+                armDir   = wrist - shoulder;
+                length   = armDir.magnitude; // ~0.6 m
+                Debug.Log($"[ArmOverlay] _forceVisible active — original arm was too short; using 0.6 m stand-in at {standInMid}.");
             }
 
             // Orientation: local Y along the arm, local Z facing the camera.
@@ -91,6 +110,10 @@ namespace ARArmDetection
 
             _quad.SetPositionAndRotation(mid, Quaternion.LookRotation(forward, up));
             _quad.localScale = new Vector3(thickness, length, 1f);
+
+            if (!_quad.gameObject.activeSelf)
+                Debug.Log($"[ArmOverlay] Quad activated — mid={mid} len={length:F2}m");
+
             _quad.gameObject.SetActive(true);
         }
 

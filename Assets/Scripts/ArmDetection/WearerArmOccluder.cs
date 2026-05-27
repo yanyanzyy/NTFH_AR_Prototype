@@ -24,22 +24,27 @@ namespace ARArmDetection
     ///
     /// SETUP
     /// -----
-    /// Assign the wearer's wrist bone transforms to _wearerArmTransforms.
-    /// These are the same bones used by WearerHandFilter (e.g. OVRSkeleton wrist joints).
-    /// For better arm coverage also add elbow or shoulder bones from OVRBody if available.
+    /// Drag the OVRSkeleton components from the Hand Tracking building blocks (left + right)
+    /// into _wearerSkeletons. The wrist bone is found automatically at runtime.
+    /// Alternatively assign wrist bone Transforms directly to _wearerArmTransforms.
     /// </summary>
     public class WearerArmOccluder : MonoBehaviour
     {
-        [Tooltip("World-space transforms of the wearer's arm joints.\n" +
-                 "Add wrists (required), elbows and/or shoulders for broader coverage.\n" +
-                 "Use the same OVRSkeleton wrist bones as WearerHandFilter.")]
+        [Tooltip("World-space transforms of the wearer's arm joints (wrists, elbows, etc).\n" +
+                 "Leave empty when using _wearerSkeletons instead.")]
         [SerializeField] private Transform[] _wearerArmTransforms;
+
+        [Tooltip("Drag the OVRSkeleton components from the Hand Tracking building blocks here " +
+                 "(one per hand). The wrist bone is located automatically at runtime — " +
+                 "no need to navigate the bone list in the Inspector.")]
+        [SerializeField] private OVRSkeleton[] _wearerSkeletons;
 
         [Tooltip("Radius of each sphere occluder in metres. 0.12 m gives ~24 cm diameter, " +
                  "enough to cover the wrist / lower hand.")]
         [SerializeField] private float _occluderRadius = 0.12f;
 
-        private GameObject[] _occluders;
+        private GameObject[] _transformOccluders;  // one per _wearerArmTransforms entry
+        private GameObject[] _skeletonOccluders;   // one per _wearerSkeletons entry
         private Material     _depthOnlyMaterial;
 
         // ── Unity lifecycle ────────────────────────────────────────────────────────────
@@ -59,18 +64,37 @@ namespace ARArmDetection
         private void LateUpdate()
         {
             // LateUpdate so the occluder moves AFTER OVR skeleton updates transforms.
-            if (_wearerArmTransforms == null || _occluders == null) return;
 
-            int count = Mathf.Min(_wearerArmTransforms.Length, _occluders.Length);
-            for (int i = 0; i < count; i++)
+            // 1. Transform-based occluders.
+            if (_wearerArmTransforms != null && _transformOccluders != null)
             {
-                bool valid = _wearerArmTransforms[i] != null;
-                _occluders[i].SetActive(valid);
-                if (valid)
-                    _occluders[i].transform.position = _wearerArmTransforms[i].position;
+                int count = Mathf.Min(_wearerArmTransforms.Length, _transformOccluders.Length);
+                for (int i = 0; i < count; i++)
+                {
+                    bool valid = _wearerArmTransforms[i] != null;
+                    _transformOccluders[i].SetActive(valid);
+                    if (valid)
+                        _transformOccluders[i].transform.position = _wearerArmTransforms[i].position;
+                }
+                for (int i = count; i < _transformOccluders.Length; i++)
+                    _transformOccluders[i].SetActive(false);
             }
-            for (int i = count; i < _occluders.Length; i++)
-                _occluders[i].SetActive(false);
+
+            // 2. Skeleton-based occluders — auto-resolve wrist bone each frame.
+            if (_wearerSkeletons != null && _skeletonOccluders != null)
+            {
+                int count = Mathf.Min(_wearerSkeletons.Length, _skeletonOccluders.Length);
+                for (int i = 0; i < count; i++)
+                {
+                    var wristPos = IsSkeletonReady(_wearerSkeletons[i])
+                        ? FindWristPosition(_wearerSkeletons[i]) : null;
+                    _skeletonOccluders[i].SetActive(wristPos.HasValue);
+                    if (wristPos.HasValue)
+                        _skeletonOccluders[i].transform.position = wristPos.Value;
+                }
+                for (int i = count; i < _skeletonOccluders.Length; i++)
+                    _skeletonOccluders[i].SetActive(false);
+            }
         }
 
 #if UNITY_EDITOR
@@ -86,39 +110,52 @@ namespace ARArmDetection
 
         private void RebuildOccluders()
         {
-            int count = _wearerArmTransforms?.Length ?? 0;
-            _occluders = new GameObject[count];
-            float diameter = _occluderRadius * 2f;
+            int transformCount = _wearerArmTransforms?.Length ?? 0;
+            int skeletonCount  = _wearerSkeletons?.Length     ?? 0;
 
-            for (int i = 0; i < count; i++)
-            {
-                var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-                go.name = $"WristDepthOccluder_{i}";
-                go.transform.SetParent(transform, false);
-                go.transform.localScale = Vector3.one * diameter;
+            _transformOccluders = new GameObject[transformCount];
+            _skeletonOccluders  = new GameObject[skeletonCount];
 
-                // Remove collider — we only want rendering.
-                var col = go.GetComponent<Collider>();
-                if (col != null) Destroy(col);
+            for (int i = 0; i < transformCount; i++)
+                _transformOccluders[i] = CreateOccluderSphere($"TransformOccluder_{i}");
 
-                var mr = go.GetComponent<MeshRenderer>();
-                mr.sharedMaterial = _depthOnlyMaterial;
-                mr.shadowCastingMode  = UnityEngine.Rendering.ShadowCastingMode.Off;
-                mr.receiveShadows     = false;
-                mr.lightProbeUsage    = UnityEngine.Rendering.LightProbeUsage.Off;
-                mr.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
+            for (int i = 0; i < skeletonCount; i++)
+                _skeletonOccluders[i]  = CreateOccluderSphere($"SkeletonOccluder_{i}");
+        }
 
-                go.SetActive(false);
-                _occluders[i] = go;
-            }
+        private GameObject CreateOccluderSphere(string goName)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            go.name = goName;
+            go.transform.SetParent(transform, false);
+            go.transform.localScale = Vector3.one * (_occluderRadius * 2f);
+
+            var col = go.GetComponent<Collider>();
+            if (col != null) Destroy(col);
+
+            var mr = go.GetComponent<MeshRenderer>();
+            mr.sharedMaterial       = _depthOnlyMaterial;
+            mr.shadowCastingMode    = UnityEngine.Rendering.ShadowCastingMode.Off;
+            mr.receiveShadows       = false;
+            mr.lightProbeUsage      = UnityEngine.Rendering.LightProbeUsage.Off;
+            mr.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
+
+            go.SetActive(false);
+            return go;
         }
 
         private void DestroyOccluders()
         {
-            if (_occluders == null) return;
-            foreach (var o in _occluders)
-                if (o != null) Destroy(o);
-            _occluders = null;
+            if (_transformOccluders != null)
+            {
+                foreach (var o in _transformOccluders) if (o != null) Destroy(o);
+                _transformOccluders = null;
+            }
+            if (_skeletonOccluders != null)
+            {
+                foreach (var o in _skeletonOccluders) if (o != null) Destroy(o);
+                _skeletonOccluders = null;
+            }
         }
 
         private static Material CreateDepthOnlyMaterial()
@@ -126,11 +163,26 @@ namespace ARArmDetection
             var shader = Shader.Find("ArmDetection/DepthOccluder");
             if (shader != null) return new Material(shader);
 
-            // Fallback: URP Unlit won't occlude properly, but at least won't crash.
             Debug.LogError("[WearerArmOccluder] Shader 'ArmDetection/DepthOccluder' not found. " +
                            "Ensure DepthOccluder.shader is inside the Assets folder.");
             return new Material(Shader.Find("Universal Render Pipeline/Unlit")
                                 ?? Shader.Find("Unlit/Color"));
+        }
+
+        // ── Static helpers ─────────────────────────────────────────────────────────────
+
+        private static bool IsSkeletonReady(OVRSkeleton skel)
+            => skel != null && skel.IsInitialized && skel.Bones != null && skel.Bones.Count > 0;
+
+        private static Vector3? FindWristPosition(OVRSkeleton skel)
+        {
+            foreach (var bone in skel.Bones)
+            {
+                if (bone == null || bone.Transform == null) continue;
+                if (bone.Id == OVRSkeleton.BoneId.Hand_WristRoot)
+                    return bone.Transform.position;
+            }
+            return null;
         }
     }
 }

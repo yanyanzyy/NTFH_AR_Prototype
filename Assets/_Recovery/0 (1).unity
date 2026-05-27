@@ -268,7 +268,7 @@ MonoBehaviour:
   requestEyeTrackingPermissionOnStartup: 0
   requestScenePermissionOnStartup: 0
   requestRecordAudioPermissionOnStartup: 0
-  requestPassthroughCameraAccessPermissionOnStartup: 0
+  requestPassthroughCameraAccessPermissionOnStartup: 1
   _localDimming: 1
   _trackingOriginType: 1
   usePositionTracking: 1
@@ -1082,10 +1082,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 85834b2773b2b44ca9ee84cadb152f11, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.WearerHandFilter
-  _wearerWristTransforms: []
-  _wearerSkeletons:
-  - {fileID: 1985811706}
-  - {fileID: 426222574}
+  _wearerWristTransforms:
+  - {fileID: 1985811701}
+  - {fileID: 426222569}
   _imageRadiusPixels: 120
 --- !u!4 &969411799
 Transform:
@@ -1459,10 +1458,9 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a3ffacf5a4ce04cdc9d7d47ec3a0d355, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.WearerArmOccluder
-  _wearerArmTransforms: []
-  _wearerSkeletons:
-  - {fileID: 1985811706}
-  - {fileID: 426222574}
+  _wearerArmTransforms:
+  - {fileID: 1985811701}
+  - {fileID: 426222569}
   _occluderRadius: 0.12
 --- !u!1 &1277423722
 GameObject:
@@ -1791,7 +1789,6 @@ MonoBehaviour:
   _thicknessRatio: 0.22
   _minThickness: 0.05
   _maxThickness: 0.18
-  _forceVisible: 0
 --- !u!4 &1511012892
 Transform:
   m_ObjectHideFlags: 0
