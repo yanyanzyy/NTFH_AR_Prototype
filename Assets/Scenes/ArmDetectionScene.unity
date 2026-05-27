@@ -2282,7 +2282,7 @@ MonoBehaviour:
   _minDepthMeters: 0.3
   _maxDepthMeters: 8
   _keypointConfidence: 0.15
-  _debugHUD: {fileID: 0}
+  _debugHUD: {fileID: 1142564977}
   _bypassWearerFilter: 0
 --- !u!4 &2062675445
 Transform:
