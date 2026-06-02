@@ -1787,14 +1787,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e824a19dec9524c19a1646ea9ae97187, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmOverlay
-  _overlayTexture: {fileID: 2800000, guid: 09a89cc989902a44c8fa144bd2d661a7, type: 3}
-  _color: {r: 1, g: 1, b: 1, a: 1}
-  _opacity: 0.8
+  _color: {r: 1, g: 0, b: 0, a: 1}
   _thicknessRatio: 0.22
-  _minThickness: 0.45
-  _maxThickness: 0.6
-  _textureTiling: {x: 1, y: 1}
-  _textureOffset: {x: 0, y: 0}
+  _minThickness: 0.05
+  _maxThickness: 0.18
   _forceVisible: 0
 --- !u!4 &1511012892
 Transform:
