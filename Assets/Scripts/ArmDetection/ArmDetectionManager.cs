@@ -75,6 +75,10 @@ namespace ARArmDetection
         public Side SelectedDetectionSide { get; private set; } = Side.Left;
         /// <summary>Passthrough to YoloPoseDetector.LastArmOnlyMaxScore for the HUD and debug visualiser.</summary>
         public float  LastMaxArmScore => _detector != null ? _detector.LastArmOnlyMaxScore : 0f;
+        /// <summary>World-space shoulder position of the last confirmed arm. Used by ArmOverlayController to lock the 3D model.</summary>
+        public Vector3 LastArmShoulder { get; private set; }
+        /// <summary>World-space wrist position of the last confirmed arm. Used by ArmOverlayController to lock the 3D model.</summary>
+        public Vector3 LastArmWrist    { get; private set; }
 
         /// <summary>Toggle detection mode at runtime — called by DetectionModeButton.</summary>
         public void SetArmOnlyMode(bool armOnly)
@@ -212,7 +216,12 @@ namespace ARArmDetection
             // The existing API takes a Transform; we pass CameraTransform but the world coords
             // were already computed against camPose, so this stays consistent.
             if (found)
+            {
+                // Cache world-space endpoints so ArmOverlayController can lock to them.
+                LastArmShoulder = best.Shoulder;
+                LastArmWrist    = best.Wrist;
                 _overlay.Render((best.Shoulder, best.Wrist), camTransform);
+            }
             else
                 _overlay.Render(null, camTransform);
 
