@@ -170,6 +170,8 @@ MonoBehaviour:
   _pinchCooldown: 0.6
   _veinViewOpacity: 0.85
   _modelScale: 1
+  _positionOffset: {x: 0, y: 0.32, z: 0}
+  _rotationOffset: {x: 90, y: 0, z: 0}
   _liveTracking: 1
   _statusLabel: {fileID: 0}
 --- !u!1 &261493589
@@ -831,7 +833,8 @@ MonoBehaviour:
   _cameraSource: {fileID: 899930729}
   _markerSizeMetres: 0.1
   _detectEveryNFrames: 6
-  _confirmationFrames: 3
+  _windowSize: 5
+  _requiredHits: 3
 --- !u!4 &481273665
 Transform:
   m_ObjectHideFlags: 0

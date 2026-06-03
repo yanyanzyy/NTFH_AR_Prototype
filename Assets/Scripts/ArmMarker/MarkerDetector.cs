@@ -26,28 +26,35 @@ namespace ARArmDetection
         [SerializeField] private float _markerSizeMetres = 0.10f;
 
         [Tooltip("How many frames to skip between detection runs. " +
-                 "Detection is slow (~15 ms) so running every 5-6 frames avoids frame drops.")]
-        [SerializeField, Range(1, 15)] private int _detectEveryNFrames = 6;
+                 "3 is a good balance — detects fast enough while avoiding frame drops.")]
+        [SerializeField, Range(1, 15)] private int _detectEveryNFrames = 3;
 
-        [Tooltip("Minimum consecutive detections before reporting a result. " +
-                 "Filters single-frame noise.")]
-        [SerializeField, Range(1, 10)] private int _confirmationFrames = 3;
+        [Tooltip("How many recent detection attempts to consider for the sliding window.\n" +
+                 "e.g. window=5, required=3 means 3 successes in the last 5 attempts = confirmed.")]
+        [SerializeField, Range(2, 10)] private int _windowSize = 5;
+
+        [Tooltip("How many successes within the window are needed to confirm detection.\n" +
+                 "Lower = faster but more false positives. 3 out of 5 is a good default.")]
+        [SerializeField, Range(1, 10)] private int _requiredHits = 3;
 
         // ── Public result ──────────────────────────────────────────────────────────────
 
-        /// <summary>True when the marker has been confirmed in several consecutive frames.</summary>
-        public bool  IsDetected      { get; private set; }
+        /// <summary>True when the QR code has been reliably confirmed.</summary>
+        public bool       IsDetected     { get; private set; }
         /// <summary>World-space position of the QR code centre when IsDetected is true.</summary>
-        public Vector3 MarkerWorldPos { get; private set; }
+        public Vector3    MarkerWorldPos { get; private set; }
         /// <summary>World-space rotation of the marker plane when IsDetected is true.</summary>
         public Quaternion MarkerWorldRot { get; private set; }
 
         // ── Private state ──────────────────────────────────────────────────────────────
 
         private BarcodeReader _reader;
-        private Texture2D     _readbackTex;   // CPU-readable copy of the camera frame
+        private Texture2D     _readbackTex;
         private int           _frameCounter;
-        private int           _consecutiveHits;
+
+        // Sliding window: stores the last _windowSize detection results (true/false).
+        private bool[] _window;
+        private int    _windowIndex;
 
         // ── Unity lifecycle ────────────────────────────────────────────────────────────
 
@@ -55,13 +62,22 @@ namespace ARArmDetection
         {
             _reader = new BarcodeReader
             {
-                AutoRotate = false,
+                // AutoRotate tries all 4 rotations — essential for a marker on a curved
+                // arm surface that may be tilted at any angle.
+                AutoRotate = true,
                 Options = new DecodingOptions
                 {
-                    TryHarder      = false,
+                    // TryHarder makes ZXing attempt multiple binarization thresholds,
+                    // which helps in uneven lighting and on curved/reflective surfaces.
+                    TryHarder       = true,
+                    // TryInverted also attempts to decode a light-on-dark version of
+                    // the image — useful if lighting washes out the QR code contrast.
+                    TryInverted     = true,
                     PossibleFormats = new[] { BarcodeFormat.QR_CODE },
                 }
             };
+
+            _window = new bool[Mathf.Max(2, _windowSize)];
         }
 
         private void OnDestroy()
@@ -95,24 +111,29 @@ namespace ARArmDetection
             RenderTexture.active = prev;
             RenderTexture.ReleaseTemporary(rt);
 
-            // Run ZXing detection on the CPU texture.
+            // Run ZXing detection.
             Color32[] pixels = _readbackTex.GetPixels32();
-            // TryHarder gives better detection on small/curved markers at the cost of ~2 ms extra.
-            _reader.Options.TryHarder = (w < 400);
             var result = _reader.Decode(pixels, w, h);
 
-            if (result?.ResultPoints != null && result.ResultPoints.Length >= 3)
+            bool detected = result?.ResultPoints != null && result.ResultPoints.Length >= 3;
+
+            // Sliding window: record this attempt, count successes in the window.
+            // One missed frame no longer resets everything — much more robust on
+            // a curved surface where the QR briefly goes out of the optimal angle.
+            _window[_windowIndex % _window.Length] = detected;
+            _windowIndex++;
+
+            int hits = 0;
+            foreach (bool b in _window) if (b) hits++;
+
+            if (hits >= _requiredHits)
             {
-                _consecutiveHits++;
-                if (_consecutiveHits >= _confirmationFrames)
-                {
-                    IsDetected = true;
+                IsDetected = true;
+                if (detected)
                     ComputeWorldPose(result.ResultPoints, w, h);
-                }
             }
             else
             {
-                _consecutiveHits = 0;
                 IsDetected = false;
             }
         }
