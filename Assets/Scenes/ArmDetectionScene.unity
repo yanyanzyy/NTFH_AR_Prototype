@@ -1412,7 +1412,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmDetectionDebugHUD
   _cameraSource: {fileID: 899930729}
-  _detector: {fileID: 1277423723}
+  _mediaPipeDetector: {fileID: 1277423723}
   _manager: {fileID: 2062675444}
   _distanceMeters: 1.5
 --- !u!1 &1142748093
@@ -1474,8 +1474,9 @@ GameObject:
   m_Component:
   - component: {fileID: 1277423724}
   - component: {fileID: 1277423723}
+  - component: {fileID: 1277423725}
   m_Layer: 0
-  m_Name: Detector
+  m_Name: MediaPipeHandDetector
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -1490,18 +1491,18 @@ MonoBehaviour:
   m_GameObject: {fileID: 1277423722}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 9fb09025d15e24dd088f0919cb4012bb, type: 3}
+  m_Script: {fileID: 11500000, guid: e6e032a986ec45d388512aec6b9e4b86, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.YoloPoseDetector
-  _modelAsset: {fileID: 5022602860645237092, guid: 36744734e37374907ad931c9ed5f5e73, type: 3}
-  _backend: 0
-  _inputSize: 640
-  _confidenceThreshold: 0.25
-  _nmsIoUThreshold: 0.45
-  _keypointConfidenceThreshold: 0.15
-  _maxDetections: 16
-  _armOnlyFallback: 1
-  _armOnlyKeypointThreshold: 0.08
+  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.MediaPipeHandArmDetector
+  _cameraSource: {fileID: 899930729}
+  _estimatedArmLengthImageFraction: 0.32
+  _fixedBoxLengthImageFraction: 0.58
+  _fixedBoxThicknessImageFraction: 0.16
+  _directionSmoothing: 0.85
+  _staleAfterFrames: 45
+  _landmarkSmoothing: 0.75
+  _defaultConfidence: 0.95
+  _boxSmoothing: 0.65
 --- !u!4 &1277423724
 Transform:
   m_ObjectHideFlags: 0
@@ -1517,6 +1518,23 @@ Transform:
   m_Children: []
   m_Father: {fileID: 2062675445}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1277423725
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1277423722}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d9a93279ec524d08bfb0936c22a61ccb, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.MediaPipeHomulerBridge
+  _handLandmarkerRunner: {fileID: 0}
+  _target: {fileID: 1277423723}
+  _flipX: 0
+  _flipY: 0
+  _fallbackSide: 1
 --- !u!1 &1301700147
 GameObject:
   m_ObjectHideFlags: 0
@@ -2009,7 +2027,7 @@ MonoBehaviour:
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 4da04b5a7da444eb4af3348d517979c7, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.YoloBoundingBoxDebug
+  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmBoundingBoxDebug
   _manager: {fileID: 2062675444}
   _cameraSource: {fileID: 899930729}
   _lineWidth: 0.007
@@ -2211,6 +2229,57 @@ MonoBehaviour:
   installationRoutineCheckpoint:
     _installationRoutineId: 
     _installationVariants: []
+--- !u!1 &2000764471
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2000764472}
+  - component: {fileID: 2000764473}
+  m_Layer: 0
+  m_Name: CustomArmDetector
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &2000764472
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2000764471}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 2062675445}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &2000764473
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2000764471}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7ae13ebf3a440ce4c960e63a8c41ff56, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.CustomArmDetector
+  _modelAsset: {fileID: 5022602860645237092, guid: 8720ce89424dc1141afa3c16998d74e0, type: 3}
+  _backend: 256
+  _inputSize: 640
+  _confidenceThreshold: 0.03
+  _nmsIoUThreshold: 0.25
+  _maxDetections: 1
+  _forceXyxyOutput: 0
 --- !u!1 &2026037911
 GameObject:
   m_ObjectHideFlags: 0
@@ -2275,18 +2344,26 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmDetectionManager
   _cameraSource: {fileID: 899930729}
-  _detector: {fileID: 1277423723}
+  _customArmDetector: {fileID: 2000764473}
+  _mediaPipeDetector: {fileID: 1277423723}
   _wearerFilter: {fileID: 969411798}
   _overlay: {fileID: 1511012891}
-  _inferEveryNFrames: 2
+  _useCustomArmDetector: 1
+  _fallbackToMediaPipe: 0
   _depthRaycaster: {fileID: 615230029}
   _assumedPersonHeightMeters: 1.7
   _minPersonBboxPixels: 40
   _minDepthMeters: 0.3
   _maxDepthMeters: 8
-  _keypointConfidence: 0.15
+  _keypointConfidence: 0.05
+  _skipWearerFilterInArmOnlyMode: 0
+  _armOnlyStabilityRadiusPixels: 220
+  _armOnlyImageSmoothing: 0.65
+  _armOnlyWorldSmoothing: 0.55
+  _armOnlyLockLostFrames: 8
+  _customDetectorEveryNFrames: 1
   _debugHUD: {fileID: 1142564977}
-  _bypassWearerFilter: 0
+  _bypassWearerFilter: 1
 --- !u!4 &2062675445
 Transform:
   m_ObjectHideFlags: 0
@@ -2309,6 +2386,7 @@ Transform:
   - {fileID: 1849222701}
   - {fileID: 615230030}
   - {fileID: 1142564976}
+  - {fileID: 2000764472}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &2115017468

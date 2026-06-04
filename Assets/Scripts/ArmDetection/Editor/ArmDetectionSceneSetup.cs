@@ -67,16 +67,16 @@ namespace ARArmDetection.EditorTools
         [MenuItem("Tools/AR Arm Detection/Remove Bounding Box Debug")]
         public static void RemoveBoundingBoxDebug()
         {
-            var debugs = Object.FindObjectsByType<YoloBoundingBoxDebug>(FindObjectsSortMode.None);
+            var debugs = Object.FindObjectsByType<ArmBoundingBoxDebug>(FindObjectsSortMode.None);
             if (debugs.Length == 0)
             {
-                Debug.Log("[ArmDetection] No YoloBoundingBoxDebug found in scene.");
+                Debug.Log("[ArmDetection] No ArmBoundingBoxDebug found in scene.");
                 return;
             }
             foreach (var d in debugs)
             {
                 if (d == null) continue;
-                Debug.Log($"[ArmDetection] Removing YoloBoundingBoxDebug from '{d.gameObject.name}'.");
+                Debug.Log($"[ArmDetection] Removing ArmBoundingBoxDebug from '{d.gameObject.name}'.");
                 // If the GO only exists to host this component (the default 'BoundingBoxDebug' child),
                 // remove the whole GO; otherwise just strip the component.
                 if (d.gameObject.name == "BoundingBoxDebug" && d.gameObject.GetComponents<Component>().Length <= 2)
@@ -100,9 +100,9 @@ namespace ARArmDetection.EditorTools
                 Debug.LogError("[ArmDetection] ArmDetectionPrototype not found. Add the prototype first.");
                 return;
             }
-            if (prototype.GetComponentInChildren<YoloBoundingBoxDebug>() != null)
+            if (prototype.GetComponentInChildren<ArmBoundingBoxDebug>() != null)
             {
-                Debug.Log("[ArmDetection] YoloBoundingBoxDebug already present.");
+                Debug.Log("[ArmDetection] ArmBoundingBoxDebug already present.");
                 return;
             }
             var manager      = prototype.GetComponent<ArmDetectionManager>();
@@ -110,11 +110,57 @@ namespace ARArmDetection.EditorTools
 
             var go    = new GameObject("BoundingBoxDebug");
             go.transform.SetParent(prototype.transform, false);
-            var debug = go.AddComponent<YoloBoundingBoxDebug>();
+            var debug = go.AddComponent<ArmBoundingBoxDebug>();
             Undo.RegisterCreatedObjectUndo(go, "Add BoundingBoxDebug");
 
             if (manager != null)      WireReference(debug, "_manager",      manager);
             if (cameraSource != null) WireReference(debug, "_cameraSource", cameraSource);
+            EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            Selection.activeGameObject = go;
+        }
+
+        [MenuItem("Tools/AR Arm Detection/Add MediaPipe Hand Detector")]
+        public static void AddMediaPipeHandDetector()
+        {
+            var prototype = GameObject.Find("ArmDetectionPrototype");
+            if (prototype == null)
+            {
+                Debug.LogError("[ArmDetection] ArmDetectionPrototype not found. Add the prototype first.");
+                return;
+            }
+
+            var manager = prototype.GetComponent<ArmDetectionManager>();
+            if (manager == null)
+            {
+                Debug.LogError("[ArmDetection] ArmDetectionManager not found on ArmDetectionPrototype.");
+                return;
+            }
+
+            var detector = prototype.GetComponentInChildren<MediaPipeHandArmDetector>();
+            GameObject go;
+            if (detector == null)
+            {
+                go = new GameObject("MediaPipeHandDetector");
+                go.transform.SetParent(prototype.transform, false);
+                detector = go.AddComponent<MediaPipeHandArmDetector>();
+                Undo.RegisterCreatedObjectUndo(go, "Add MediaPipe Hand Detector");
+            }
+            else
+            {
+                go = detector.gameObject;
+            }
+
+            var bridge = go.GetComponent<MediaPipeHomulerBridge>() ?? go.AddComponent<MediaPipeHomulerBridge>();
+            var cameraSource = prototype.GetComponentInChildren<PassthroughCameraSource>();
+
+            WireReference(manager, "_mediaPipeDetector", detector);
+            if (cameraSource != null) WireReference(detector, "_cameraSource", cameraSource);
+            WireReference(bridge, "_target", detector);
+            var hud = prototype.GetComponentInChildren<ArmDetectionDebugHUD>();
+            if (hud != null) WireReference(hud, "_mediaPipeDetector", detector);
+
+            Debug.Log("[ArmDetection] Added MediaPipeHandDetector. After importing MediaPipeUnityPlugin, " +
+                      "drag its HandLandmarkerRunner into MediaPipeHomulerBridge._handLandmarkerRunner.");
             EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
             Selection.activeGameObject = go;
         }
@@ -162,8 +208,9 @@ namespace ARArmDetection.EditorTools
             var cameraSourceGO = CreateChild(root, "CameraSource");
             var cameraSource   = cameraSourceGO.AddComponent<PassthroughCameraSource>();
 
-            var detectorGO = CreateChild(root, "Detector");
-            var detector   = detectorGO.AddComponent<YoloPoseDetector>();
+            var mediaPipeGO = CreateChild(root, "MediaPipeHandDetector");
+            var mediaPipeDetector = mediaPipeGO.AddComponent<MediaPipeHandArmDetector>();
+            var mediaPipeBridge = mediaPipeGO.AddComponent<MediaPipeHomulerBridge>();
 
             var filterGO = CreateChild(root, "WearerFilter");
             var filter   = filterGO.AddComponent<WearerHandFilter>();
@@ -177,11 +224,11 @@ namespace ARArmDetection.EditorTools
             var modeButtonGO = CreateChild(root, "ModeButton");
             var modeButton   = modeButtonGO.AddComponent<DetectionModeButton>();
 
-            // YoloBoundingBoxDebug is restored, but it now only draws geometry for the
+            // ArmBoundingBoxDebug only draws geometry for the
             // *selected* arm (the one the manager picked and ArmOverlay renders).
-            // While searching, no boxes appear — see YoloBoundingBoxDebug.cs.
+            // While searching, no boxes appear — see ArmBoundingBoxDebug.cs.
             var bboxDebugGO = CreateChild(root, "BoundingBoxDebug");
-            var bboxDebug   = bboxDebugGO.AddComponent<YoloBoundingBoxDebug>();
+            var bboxDebug   = bboxDebugGO.AddComponent<ArmBoundingBoxDebug>();
 
             // ── Depth-API raycaster (Meta Depth API for accurate arm placement) ─────
             // Adds Meta.XR.EnvironmentRaycastManager as a sibling of CameraSource so the
@@ -193,10 +240,12 @@ namespace ARArmDetection.EditorTools
             var manager = root.AddComponent<ArmDetectionManager>();
 
             WireReference(manager,    "_cameraSource",  cameraSource);
-            WireReference(manager,    "_detector",      detector);
+            WireReference(manager,    "_mediaPipeDetector", mediaPipeDetector);
             WireReference(manager,    "_wearerFilter",  filter);
             WireReference(manager,    "_overlay",       overlay);
             WireReference(manager,    "_depthRaycaster", depthRaycaster);
+            WireReference(mediaPipeDetector, "_cameraSource", cameraSource);
+            WireReference(mediaPipeBridge, "_target", mediaPipeDetector);
             WireReference(modeButton, "_manager",       manager);
             WireReference(bboxDebug,  "_manager",       manager);
             WireReference(bboxDebug,  "_cameraSource",  cameraSource);

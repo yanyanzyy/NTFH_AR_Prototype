@@ -6,8 +6,8 @@ namespace ARArmDetection
 {
     /// <summary>
     /// Orchestrates the arm-detection pipeline each frame:
-    ///   1. Runs YoloPoseDetector on the current passthrough frame.
-    ///   2. Converts keypoints to world-space arm endpoints using a depth heuristic.
+    ///   1. Reads MediaPipe hand landmarks from the current passthrough frame.
+    ///   2. Converts synthetic arm keypoints to world-space arm endpoints.
     ///   3. Rejects the wearer's own arms via WearerHandFilter.
     ///   4. Among remaining candidates, picks the SINGLE CLOSEST arm to the camera.
     ///   5. Passes it to ArmOverlay to render the red world-space quad.
@@ -17,13 +17,16 @@ namespace ARArmDetection
     {
         [Header("References")]
         [SerializeField] private PassthroughCameraSource _cameraSource;
-        [SerializeField] private YoloPoseDetector        _detector;
+        [SerializeField] private CustomArmDetector _customArmDetector;
+        [SerializeField] private MediaPipeHandArmDetector _mediaPipeDetector;
         [SerializeField] private WearerHandFilter        _wearerFilter;
         [SerializeField] private ArmOverlay              _overlay;
 
-        [Header("Detection cadence")]
-        [Tooltip("Run inference every N frames. 1 = every frame, 2 = every other.")]
-        [SerializeField, Range(1, 8)] private int _inferEveryNFrames = 2;
+        [Header("Detector selection")]
+        [Tooltip("Use the trained custom arm model as the primary whole-arm detector.")]
+        [SerializeField] private bool _useCustomArmDetector = true;
+        [Tooltip("If the custom detector finds no arm, use MediaPipe hand landmarks as a fallback.")]
+        [SerializeField] private bool _fallbackToMediaPipe = true;
 
         [Header("Depth estimation")]
         [Tooltip("Optional: Meta Depth-API raycaster. When present, the manager raycasts the wrist's " +
@@ -41,7 +44,19 @@ namespace ARArmDetection
 
         [Header("Arm filtering")]
         [Tooltip("Minimum keypoint confidence for shoulder and wrist to accept an arm.")]
-        [SerializeField, Range(0f, 1f)] private float _keypointConfidence = 0.15f;
+        [SerializeField, Range(0f, 1f)] private float _keypointConfidence = 0.05f;
+        [Tooltip("Skip wearer-arm rejection while in arm-only mode. Leave off for headset use.")]
+        [SerializeField] private bool _skipWearerFilterInArmOnlyMode = false;
+        [Tooltip("How far an arm-only detection can jump in image pixels before it loses the previous-arm preference.")]
+        [SerializeField] private float _armOnlyStabilityRadiusPixels = 220f;
+        [Tooltip("Image-space smoothing for the selected arm-only debug box/keypoints.")]
+        [SerializeField, Range(0f, 1f)] private float _armOnlyImageSmoothing = 0.65f;
+        [Tooltip("World-space smoothing for selected arm-only overlay endpoints.")]
+        [SerializeField, Range(0f, 1f)] private float _armOnlyWorldSmoothing = 0.55f;
+        [Tooltip("Keep the last valid non-wearer arm visible through short MediaPipe dropouts.")]
+        [SerializeField, Range(0, 90)] private int _armOnlyLockLostFrames = 30;
+        [Tooltip("Run custom arm model every N frames. Higher = faster but less responsive.")]
+        [SerializeField, Range(1, 12)] private int _customDetectorEveryNFrames = 4;
 
         [Header("Debug")]
         [Tooltip("Optional debug HUD. Attach ArmDetectionDebugHUD component here.")]
@@ -51,8 +66,6 @@ namespace ARArmDetection
 
         // ── Private state ──────────────────────────────────────────────────────────────
 
-        private int _frameCounter;
-
         // Readable by the debug HUD.
         public int    InferenceCount    { get; private set; }
         public int    LastPersonCount   { get; private set; }
@@ -61,27 +74,27 @@ namespace ARArmDetection
         public string ManagerStatus   { get; private set; } = "Not started";
         /// <summary>Explains why no arm was found on the last inference frame.</summary>
         public string LastArmStatus   { get; private set; } = "—";
-        /// <summary>True when the detector is running in arm-only mode (mannequin / isolated arm).</summary>
-        public bool   IsArmOnlyMode   { get; private set; } = false;
+        /// <summary>The prototype now always runs as an arm-only detector.</summary>
+        public bool   IsArmOnlyMode   => true;
         /// <summary>All PersonDetections from the last inference frame (copied from detector scratch list).</summary>
         public List<PersonDetection> LastDetections { get; } = new();
         /// <summary>
         /// Index into <see cref="LastDetections"/> of the detection the manager selected
         /// for overlay rendering this frame, or -1 if no arm was found. Used by
-        /// YoloBoundingBoxDebug to draw the bbox/keypoints of the chosen target only.
+        /// ArmBoundingBoxDebug to draw the bbox/keypoints of the chosen target only.
         /// </summary>
         public int SelectedDetectionIndex { get; private set; } = -1;
         /// <summary>The side (Left/Right) of the selected arm. Undefined when SelectedDetectionIndex is -1.</summary>
         public Side SelectedDetectionSide { get; private set; } = Side.Left;
-        /// <summary>Passthrough to YoloPoseDetector.LastArmOnlyMaxScore for the HUD and debug visualiser.</summary>
-        public float  LastMaxArmScore => _detector != null ? _detector.LastArmOnlyMaxScore : 0f;
+        /// <summary>Highest detector score from the custom arm model or MediaPipe fallback.</summary>
+        public float  LastMaxArmScore => Mathf.Max(
+            _customArmDetector != null ? _customArmDetector.LastArmOnlyMaxScore : 0f,
+            _mediaPipeDetector != null ? _mediaPipeDetector.LastArmOnlyMaxScore : 0f);
 
         /// <summary>Toggle detection mode at runtime — called by DetectionModeButton.</summary>
         public void SetArmOnlyMode(bool armOnly)
         {
-            IsArmOnlyMode = armOnly;
-            if (_detector != null) _detector.ArmOnlyMode = armOnly;
-            Debug.Log($"[ArmManager] Mode → {(armOnly ? "ARM-ONLY" : "NORMAL")}");
+            Debug.Log("[ArmManager] Arm detection mode is fixed to ARM-ONLY.");
         }
 
         // Best arm candidate this frame.
@@ -90,24 +103,46 @@ namespace ARArmDetection
             public Vector3 Shoulder;
             public Vector3 Wrist;
             public float   Depth;   // estimated metres from camera
+            public float   Score;
+            public Vector2 ShoulderImage;
+            public Vector2 ElbowImage;
+            public Vector2 WristImage;
+            public Side    Side;
         }
+
+        private bool    _hasStableArmImage;
+        private Side    _stableArmSide;
+        private Vector2 _stableArmMidpointImage;
+        private bool    _hasSmoothedArmWorld;
+        private Vector3 _smoothedShoulderWorld;
+        private Vector3 _smoothedWristWorld;
+        private PersonDetection _stableArmDetection;
+        private int _stableArmLostFrames;
+        private bool _currentDetectionsAreArmOnly;
+        private bool _currentDetectionsAreMediaPipe;
+        private bool _currentDetectionsAreCustom;
+        private int _customDetectorFrameCounter;
+        private readonly List<PersonDetection> _cachedCustomDetections = new();
 
         // ── Unity lifecycle ────────────────────────────────────────────────────────────
 
         private void Reset()
         {
             _cameraSource = GetComponentInChildren<PassthroughCameraSource>();
-            _detector     = GetComponentInChildren<YoloPoseDetector>();
+            _customArmDetector = GetComponentInChildren<CustomArmDetector>();
+            _mediaPipeDetector = GetComponentInChildren<MediaPipeHandArmDetector>();
             _wearerFilter = GetComponentInChildren<WearerHandFilter>();
             _overlay      = GetComponentInChildren<ArmOverlay>();
         }
 
         private void Start()
         {
-            Debug.Log($"[ArmManager] Start — cam={_cameraSource != null}  det={_detector != null}  " +
+            Debug.Log($"[ArmManager] Start — cam={_cameraSource != null}  mp={_mediaPipeDetector != null}  " +
                       $"filter={_wearerFilter != null}  overlay={_overlay != null}  hud={_debugHUD != null}");
+            if (_customArmDetector == null) _customArmDetector = GetComponentInChildren<CustomArmDetector>();
+            if (_mediaPipeDetector == null) _mediaPipeDetector = GetComponentInChildren<MediaPipeHandArmDetector>();
             if (_cameraSource == null) Debug.LogError("[ArmManager] _cameraSource is NULL — drag PassthroughCameraSource here.");
-            if (_detector     == null) Debug.LogError("[ArmManager] _detector is NULL — drag YoloPoseDetector here.");
+            if (_customArmDetector == null && _mediaPipeDetector == null) Debug.LogError("[ArmManager] No detector assigned — add CustomArmDetector or MediaPipeHandArmDetector.");
             if (_overlay      == null) Debug.LogError("[ArmManager] _overlay is NULL — drag ArmOverlay here.");
         }
 
@@ -118,26 +153,28 @@ namespace ARArmDetection
             {
                 Debug.Log($"[ArmManager] " +
                           $"cam={_cameraSource != null} " +
-                          $"det={_detector != null} " +
+                          $"custom={_customArmDetector != null} " +
+                          $"mp={_mediaPipeDetector != null} " +
                           $"overlay={_overlay != null} " +
                           $"hasFrame={(_cameraSource != null && _cameraSource.HasFrame)} " +
-                          $"modelReady={(_detector != null && _detector.IsReady)} " +
+                          $"modelReady={HasAnyReadyDetector()} " +
                           $"inferenceCount={InferenceCount}  armStatus={LastArmStatus}");
             }
 
             // Set ManagerStatus at every blocking point so the HUD shows the root cause.
             if (_cameraSource == null) { ManagerStatus = "ERR: CameraSource not assigned"; return; }
-            if (_detector     == null) { ManagerStatus = "ERR: Detector not assigned";     return; }
+            if (_customArmDetector == null && _mediaPipeDetector == null) { ManagerStatus = "ERR: No arm detector assigned"; return; }
             if (_overlay      == null) { ManagerStatus = "ERR: Overlay not assigned";      return; }
             if (!_cameraSource.HasFrame)  { ManagerStatus = "Waiting: no camera frame";    return; }
-            if (!_detector.IsReady)       { ManagerStatus = "Waiting: model loading";      return; }
+            if (!HasAnyReadyDetector()) { ManagerStatus = "Waiting: arm detector not ready"; return; }
 
-            _frameCounter++;
-            if (_frameCounter % Mathf.Max(1, _inferEveryNFrames) != 0) return;
+            ManagerStatus = "Running [Custom arm detector]";
 
-            ManagerStatus = IsArmOnlyMode ? "Running [ARM-ONLY]" : "Running [Normal]";
-            var persons = _detector.Run(_cameraSource.CurrentTexture);
-            InferenceCount++;
+            _currentDetectionsAreCustom = false;
+            _currentDetectionsAreMediaPipe = false;
+            _currentDetectionsAreArmOnly = true;
+
+            List<PersonDetection> persons = RunPrimaryDetector();
             LastPersonCount = persons.Count;
 
             // Copy to stable list so debug visualisers can read it next frame.
@@ -172,20 +209,36 @@ namespace ARArmDetection
                 { selectedIdx = i; selectedSide = Side.Right; }
             }
 
+            if (found && _currentDetectionsAreArmOnly)
+            {
+                StabilizeArmOnlyCandidate(ref best, selectedSide, selectedIdx);
+            }
+            else if (!found && IsArmOnlyMode && !_currentDetectionsAreCustom)
+            {
+                TryUseLockedArmOnlyCandidate(ref found, ref best, ref selectedIdx, ref selectedSide);
+            }
+            else if (!found)
+            {
+                ResetArmStability();
+            }
+
             SelectedDetectionIndex = found ? selectedIdx : -1;
             SelectedDetectionSide  = selectedSide;
 
             // ── Compose arm status string ──────────────────────────────────────────────
             if (found)
             {
-                string mode = (_detector != null && _detector.LastRunWasArmOnlyFallback)
-                    ? " [arm-only mode]" : "";
+                string mode = _currentDetectionsAreMediaPipe
+                    ? " [arm-only MediaPipe]"
+                    : _currentDetectionsAreArmOnly ? " [arm-only mode]" : "";
                 string depthSrc = depthRaycastHits > 0 ? "depth-API" : "heuristic";
                 LastArmStatus = $"OK — {best.Depth:F1} m away ({depthSrc}){mode}";
             }
             else if (persons.Count == 0)
             {
-                LastArmStatus = $"0 persons (YOLO conf<{_detector.ConfidenceThreshold:F2}? arm-only threshold too high?)";
+                LastArmStatus = _currentDetectionsAreMediaPipe
+                    ? $"0 hands ({_mediaPipeDetector.Status})"
+                    : $"0 arms ({(_customArmDetector != null ? _customArmDetector.Status : "custom detector missing")})";
             }
             else if (bboxPassCount == 0)
             {
@@ -225,6 +278,65 @@ namespace ARArmDetection
         /// <summary>Public wrapper used by the bounding-box debug visualiser.</summary>
         public float GetEstimatedDepth(PersonDetection p) => EstimateDepth(p);
 
+        private bool HasAnyReadyDetector()
+        {
+            bool customReady = _useCustomArmDetector
+                            && _customArmDetector != null
+                            && _customArmDetector.IsReady;
+            bool mediaPipeReady = _mediaPipeDetector != null && _mediaPipeDetector.IsReady;
+            return customReady || mediaPipeReady;
+        }
+
+        private List<PersonDetection> RunPrimaryDetector()
+        {
+            bool canRunCustom = _useCustomArmDetector
+                            && _customArmDetector != null
+                            && _customArmDetector.IsReady;
+
+            if (canRunCustom)
+            {
+                _customDetectorFrameCounter++;
+                bool shouldRunCustom = _cachedCustomDetections.Count == 0
+                                    || _customDetectorFrameCounter % Mathf.Max(1, _customDetectorEveryNFrames) == 0;
+
+                if (shouldRunCustom)
+                {
+                    var customPersons = _customArmDetector.Run(_cameraSource.CurrentTexture);
+                    if (_customArmDetector.LastRunScheduledInference) InferenceCount++;
+
+                    if (customPersons.Count > 0)
+                    {
+                        _cachedCustomDetections.Clear();
+                        _cachedCustomDetections.AddRange(customPersons);
+                    }
+                    else
+                    {
+                        _cachedCustomDetections.Clear();
+                    }
+                }
+
+                if (_cachedCustomDetections.Count > 0 || !_fallbackToMediaPipe || _mediaPipeDetector == null || !_mediaPipeDetector.IsReady)
+                {
+                    _currentDetectionsAreCustom = true;
+                    _currentDetectionsAreMediaPipe = false;
+                    ManagerStatus = "Running [Custom arm detector]";
+                    return _cachedCustomDetections;
+                }
+            }
+
+            if (_mediaPipeDetector != null && _mediaPipeDetector.IsReady)
+            {
+                var mediaPipePersons = _mediaPipeDetector.Run(null);
+                if (_mediaPipeDetector.LastRunConsumedNewResult) InferenceCount++;
+                _currentDetectionsAreCustom = false;
+                _currentDetectionsAreMediaPipe = true;
+                ManagerStatus = "Running [MediaPipe fallback]";
+                return mediaPipePersons;
+            }
+
+            return _cachedCustomDetections;
+        }
+
         private float EstimateDepth(PersonDetection p)
         {
             float imageH = _cameraSource.Height;
@@ -234,7 +346,7 @@ namespace ARArmDetection
             // If this came from the arm-only fallback, the bbox is built from keypoints
             // (not from a full-body anchor), so we use shoulder→wrist pixel distance
             // calibrated against assumed arm length instead.
-            if (_detector != null && _detector.LastRunWasArmOnlyFallback)
+            if (_currentDetectionsAreArmOnly)
             {
                 float armDepth = EstimateDepthFromArmLength(p, focalPx);
                 if (armDepth > 0f) return armDepth;
@@ -312,7 +424,8 @@ namespace ARArmDetection
             };
 
             // Reject the wearer's own arms (skip if bypass is enabled for testing).
-            if (!_bypassWearerFilter && _wearerFilter != null && _wearerFilter.IsWearerArm(arm, _cameraSource)) return false;
+            bool skipWearerFilter = _bypassWearerFilter || (IsArmOnlyMode && _skipWearerFilterInArmOnlyMode);
+            if (!skipWearerFilter && _wearerFilter != null && _wearerFilter.IsWearerArm(arm, _cameraSource)) return false;
 
             filterPassCount++;
 
@@ -327,20 +440,174 @@ namespace ARArmDetection
             // world position — works whether we used raycast or heuristic.
             var camPose = _cameraSource.CameraPose;
             float effectiveDepth = Vector3.Distance(camPose.position, wristWorld);
+            float score = arm.Confidence;
 
-            // Keep only the closest candidate.
-            if (!found || effectiveDepth < best.Depth)
+            if (_currentDetectionsAreArmOnly)
+            {
+                Vector2 midpoint = (arm.ShoulderImage + arm.WristImage) * 0.5f;
+                if (_hasStableArmImage && _stableArmSide == side)
+                {
+                    float jump = Vector2.Distance(midpoint, _stableArmMidpointImage);
+                    if (jump > Mathf.Max(1f, _armOnlyStabilityRadiusPixels)) return false;
+
+                    float continuity = Mathf.Clamp01(1f - jump / Mathf.Max(1f, _armOnlyStabilityRadiusPixels));
+                    score += continuity * 0.5f;
+                }
+                else if (_hasStableArmImage)
+                {
+                    return false;
+                }
+
+                score -= effectiveDepth * 0.015f;
+            }
+            else
+            {
+                score -= effectiveDepth * 0.05f;
+            }
+
+            // Keep the most stable/plausible candidate. In normal mode this still
+            // slightly prefers closer arms; in arm-only mode continuity matters more.
+            if (!found || score > best.Score)
             {
                 best = new ArmCandidate
                 {
-                    Shoulder = shoulderWorld,
-                    Wrist    = wristWorld,
-                    Depth    = effectiveDepth,
+                    Shoulder      = shoulderWorld,
+                    Wrist         = wristWorld,
+                    Depth         = effectiveDepth,
+                    Score         = score,
+                    ShoulderImage = arm.ShoulderImage,
+                    ElbowImage    = arm.ElbowImage,
+                    WristImage    = arm.WristImage,
+                    Side          = side,
                 };
                 found = true;
                 return true;
             }
             return false;
+        }
+
+        private void StabilizeArmOnlyCandidate(ref ArmCandidate best, Side selectedSide, int selectedIdx)
+        {
+            Vector2 midpoint = (best.ShoulderImage + best.WristImage) * 0.5f;
+            float imageT = 1f - _armOnlyImageSmoothing;
+
+            if (_hasStableArmImage)
+            {
+                best.ShoulderImage = Vector2.Lerp(_stableArmDetection.Keypoints[(int)(selectedSide == Side.Left
+                    ? CocoKeypoint.LeftShoulder : CocoKeypoint.RightShoulder)].ImagePos, best.ShoulderImage, imageT);
+                best.ElbowImage = Vector2.Lerp(_stableArmDetection.Keypoints[(int)(selectedSide == Side.Left
+                    ? CocoKeypoint.LeftElbow : CocoKeypoint.RightElbow)].ImagePos, best.ElbowImage, imageT);
+                best.WristImage = Vector2.Lerp(_stableArmDetection.Keypoints[(int)(selectedSide == Side.Left
+                    ? CocoKeypoint.LeftWrist : CocoKeypoint.RightWrist)].ImagePos, best.WristImage, imageT);
+                midpoint = (best.ShoulderImage + best.WristImage) * 0.5f;
+                _stableArmMidpointImage = Vector2.Lerp(_stableArmMidpointImage, midpoint, imageT);
+            }
+            else
+            {
+                _stableArmMidpointImage = midpoint;
+            }
+
+            _stableArmSide = selectedSide;
+            _hasStableArmImage = true;
+            _stableArmLostFrames = 0;
+
+            if (!_hasSmoothedArmWorld)
+            {
+                _smoothedShoulderWorld = best.Shoulder;
+                _smoothedWristWorld = best.Wrist;
+                _hasSmoothedArmWorld = true;
+            }
+            else
+            {
+                float t = 1f - _armOnlyWorldSmoothing;
+                _smoothedShoulderWorld = Vector3.Lerp(_smoothedShoulderWorld, best.Shoulder, t);
+                _smoothedWristWorld = Vector3.Lerp(_smoothedWristWorld, best.Wrist, t);
+            }
+
+            best.Shoulder = _smoothedShoulderWorld;
+            best.Wrist = _smoothedWristWorld;
+
+            if (selectedIdx >= 0 && selectedIdx < LastDetections.Count)
+            {
+                _stableArmDetection = BuildSmoothedDetection(
+                    LastDetections[selectedIdx],
+                    best,
+                    selectedSide,
+                    preserveSourceBounds: false);
+                LastDetections[selectedIdx] = _stableArmDetection;
+            }
+        }
+
+        private bool TryUseLockedArmOnlyCandidate(ref bool found, ref ArmCandidate best, ref int selectedIdx, ref Side selectedSide)
+        {
+            if (!_hasStableArmImage || _stableArmLostFrames >= _armOnlyLockLostFrames)
+            {
+                ResetArmStability();
+                return false;
+            }
+
+            _stableArmLostFrames++;
+            LastDetections.Clear();
+            LastDetections.Add(_stableArmDetection);
+            selectedIdx = 0;
+            selectedSide = _stableArmSide;
+            best = new ArmCandidate
+            {
+                Shoulder = _smoothedShoulderWorld,
+                Wrist = _smoothedWristWorld,
+                Depth = Vector3.Distance(_cameraSource.CameraPose.position, _smoothedWristWorld),
+                Score = _stableArmDetection.Confidence,
+                ShoulderImage = _stableArmDetection.Keypoints[(int)(selectedSide == Side.Left
+                    ? CocoKeypoint.LeftShoulder : CocoKeypoint.RightShoulder)].ImagePos,
+                ElbowImage = _stableArmDetection.Keypoints[(int)(selectedSide == Side.Left
+                    ? CocoKeypoint.LeftElbow : CocoKeypoint.RightElbow)].ImagePos,
+                WristImage = _stableArmDetection.Keypoints[(int)(selectedSide == Side.Left
+                    ? CocoKeypoint.LeftWrist : CocoKeypoint.RightWrist)].ImagePos,
+                Side = selectedSide,
+            };
+            found = true;
+            return true;
+        }
+
+        private static PersonDetection BuildSmoothedDetection(PersonDetection source,
+                                                              ArmCandidate arm,
+                                                              Side side,
+                                                              bool preserveSourceBounds)
+        {
+            var keypoints = (Keypoint[])source.Keypoints.Clone();
+            int shoulderIdx = side == Side.Left ? (int)CocoKeypoint.LeftShoulder : (int)CocoKeypoint.RightShoulder;
+            int elbowIdx = side == Side.Left ? (int)CocoKeypoint.LeftElbow : (int)CocoKeypoint.RightElbow;
+            int wristIdx = side == Side.Left ? (int)CocoKeypoint.LeftWrist : (int)CocoKeypoint.RightWrist;
+
+            keypoints[shoulderIdx] = new Keypoint { ImagePos = arm.ShoulderImage, Confidence = keypoints[shoulderIdx].Confidence };
+            keypoints[elbowIdx] = new Keypoint { ImagePos = arm.ElbowImage, Confidence = keypoints[elbowIdx].Confidence };
+            keypoints[wristIdx] = new Keypoint { ImagePos = arm.WristImage, Confidence = keypoints[wristIdx].Confidence };
+
+            return new PersonDetection
+            {
+                Confidence = source.Confidence,
+                ImageBounds = preserveSourceBounds
+                    ? source.ImageBounds
+                    : BuildArmImageBounds(arm.ShoulderImage, arm.ElbowImage, arm.WristImage),
+                Keypoints = keypoints,
+            };
+        }
+
+        private static Rect BuildArmImageBounds(Vector2 shoulder, Vector2 elbow, Vector2 wrist)
+        {
+            const float Padding = 28f;
+            float minX = Mathf.Min(Mathf.Min(shoulder.x, elbow.x), wrist.x) - Padding;
+            float minY = Mathf.Min(Mathf.Min(shoulder.y, elbow.y), wrist.y) - Padding;
+            float maxX = Mathf.Max(Mathf.Max(shoulder.x, elbow.x), wrist.x) + Padding;
+            float maxY = Mathf.Max(Mathf.Max(shoulder.y, elbow.y), wrist.y) + Padding;
+            return new Rect(minX, minY, maxX - minX, maxY - minY);
+        }
+
+        private void ResetArmStability()
+        {
+            _hasStableArmImage = false;
+            _hasSmoothedArmWorld = false;
+            _stableArmLostFrames = 0;
         }
 
         /// <summary>
