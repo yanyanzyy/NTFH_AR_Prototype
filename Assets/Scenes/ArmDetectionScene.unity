@@ -2527,8 +2527,9 @@ MonoBehaviour:
   _inputSize: 640
   _confidenceThreshold: 0.03
   _nmsIoUThreshold: 0.25
-  _maxDetections: 1
+  _maxDetections: 5
   _forceXyxyOutput: 0
+  _forceHorizontalArmKeypoints: 1
 --- !u!1 &2026037911
 GameObject:
   m_ObjectHideFlags: 0
@@ -2594,19 +2595,19 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmDetectionManager
   _cameraSource: {fileID: 899930729}
   _customArmDetector: {fileID: 2000764473}
-  _mediaPipeDetector: {fileID: 1277423723}
+  _mediaPipeDetector: {fileID: 0}
   _wearerFilter: {fileID: 969411798}
   _overlay: {fileID: 1511012891}
   _useCustomArmDetector: 1
-  _fallbackToMediaPipe: 0
+  _fallbackToMediaPipe: 1
   _depthRaycaster: {fileID: 615230029}
   _assumedPersonHeightMeters: 1.7
-  _minPersonBboxPixels: 40
+  _minPersonBboxPixels: 10
   _minDepthMeters: 0.3
   _maxDepthMeters: 8
-  _keypointConfidence: 0.05
-  _skipWearerFilterInArmOnlyMode: 0
-  _armOnlyStabilityRadiusPixels: 220
+  _keypointConfidence: 0.01
+  _skipWearerFilterInArmOnlyMode: 1
+  _armOnlyStabilityRadiusPixels: 420
   _armOnlyImageSmoothing: 0.65
   _armOnlyWorldSmoothing: 0.55
   _armOnlyLockLostFrames: 8

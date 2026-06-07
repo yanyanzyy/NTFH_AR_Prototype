@@ -4,6 +4,7 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT.
 
+using System;
 using System.Collections;
 using Mediapipe.Tasks.Vision.HandLandmarker;
 using UnityEngine;
@@ -16,6 +17,7 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
     [SerializeField] private HandLandmarkerResultAnnotationController _handLandmarkerResultAnnotationController;
 
     private Experimental.TextureFramePool _textureFramePool;
+    public event Action<HandLandmarkerResult> OnLandmarksDetected;
 
     public readonly HandLandmarkDetectionConfig config = new HandLandmarkDetectionConfig();
 
@@ -128,6 +130,7 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
             if (taskApi.TryDetect(image, imageProcessingOptions, ref result))
             {
               _handLandmarkerResultAnnotationController.DrawNow(result);
+              OnLandmarksDetected?.Invoke(result);
             }
             else
             {
@@ -138,6 +141,7 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
             if (taskApi.TryDetectForVideo(image, GetCurrentTimestampMillisec(), imageProcessingOptions, ref result))
             {
               _handLandmarkerResultAnnotationController.DrawNow(result);
+              OnLandmarksDetected?.Invoke(result);
             }
             else
             {
@@ -154,6 +158,7 @@ namespace Mediapipe.Unity.Sample.HandLandmarkDetection
     private void OnHandLandmarkDetectionOutput(HandLandmarkerResult result, Image image, long timestamp)
     {
       _handLandmarkerResultAnnotationController.DrawLater(result);
+      OnLandmarksDetected?.Invoke(result);
     }
   }
 }

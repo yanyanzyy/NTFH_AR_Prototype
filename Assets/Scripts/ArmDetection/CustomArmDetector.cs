@@ -17,11 +17,13 @@ namespace ARArmDetection
         [SerializeField] private int _inputSize = 640;
 
         [Header("Filtering")]
-        [SerializeField, Range(0f, 1f)] private float _confidenceThreshold = 0.12f;
+        [SerializeField, Range(0f, 1f)] private float _confidenceThreshold = 0.08f;
         [SerializeField, Range(0f, 1f)] private float _nmsIoUThreshold = 0.45f;
-        [SerializeField, Range(1, 50)] private int _maxDetections = 8;
-        [Tooltip("Enable if the ONNX output is x1,y1,x2,y2 instead of cx,cy,w,h. Auto usually works.")]
+        [SerializeField, Range(1, 50)] private int _maxDetections = 5;
+        [Tooltip("Enable only for NMS/exported models that output x1,y1,x2,y2. Keep off for Ultralytics raw output (1,5,8400).")]
         [SerializeField] private bool _forceXyxyOutput = false;
+        [Tooltip("Generate shoulder/wrist across the box horizontally. Keep enabled for the mannequin arm setup.")]
+        [SerializeField] private bool _forceHorizontalArmKeypoints = true;
 
         private Worker _worker;
         private Tensor<float> _inputTensor;
@@ -252,8 +254,7 @@ namespace ARArmDetection
 
         private bool LooksLikeXyxy(float x1, float y1, float x2, float y2)
         {
-            if (_forceXyxyOutput) return true;
-            return x2 > x1 && y2 > y1;
+            return _forceXyxyOutput;
         }
 
         private Rect XywhToImageBounds(float cx, float cy, float w, float h, int imageWidth, int imageHeight)
@@ -298,7 +299,7 @@ namespace ARArmDetection
             Vector2 elbow;
             Vector2 wrist;
 
-            if (b.width >= b.height)
+            if (_forceHorizontalArmKeypoints || b.width >= b.height)
             {
                 shoulder = new Vector2(b.xMin, b.center.y);
                 elbow = b.center;
