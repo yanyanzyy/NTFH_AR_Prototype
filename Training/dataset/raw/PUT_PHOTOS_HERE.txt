@@ -1,0 +1,7 @@
+Drop your mannequin-arm photos in this folder (jpg/png), then run the scripts
+in Training/scripts/ in order. See Training/README.md for the full walkthrough.
+
+Best source: frames captured on the Quest itself via the TrainingFrameCapture
+component, pulled with:
+
+  adb pull /sdcard/Android/data/<your.package.name>/files/ArmCaptures .
