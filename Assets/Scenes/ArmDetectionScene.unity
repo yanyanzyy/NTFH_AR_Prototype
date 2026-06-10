@@ -1501,7 +1501,8 @@ MonoBehaviour:
   _keypointConfidenceThreshold: 0.15
   _maxDetections: 16
   _armOnlyFallback: 1
-  _armOnlyKeypointThreshold: 0.08
+  _armOnlyKeypointThreshold: 0.25
+  _armOnlyMinArmPixels: 50
 --- !u!4 &1277423724
 Transform:
   m_ObjectHideFlags: 0
@@ -1790,6 +1791,9 @@ MonoBehaviour:
   _overlayTexture: {fileID: 2800000, guid: 09a89cc989902a44c8fa144bd2d661a7, type: 3}
   _color: {r: 1, g: 1, b: 1, a: 1}
   _opacity: 0.8
+  _useFixedSize: 1
+  _fixedLengthMeters: 0.55
+  _fixedDiameterMeters: 0.085
   _thicknessRatio: 0.22
   _minThickness: 0.45
   _maxThickness: 0.6
@@ -2289,6 +2293,11 @@ MonoBehaviour:
   _minDepthMeters: 0.3
   _maxDepthMeters: 8
   _keypointConfidence: 0.15
+  _acquireConsecutiveHits: 3
+  _loseGraceSeconds: 0.5
+  _maxTrackJumpMeters: 0.6
+  _positionSmoothTime: 0.12
+  _deadZoneMeters: 0.02
   _debugHUD: {fileID: 1142564977}
   _bypassWearerFilter: 0
 --- !u!4 &2062675445

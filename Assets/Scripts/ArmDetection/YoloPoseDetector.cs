@@ -35,8 +35,14 @@ namespace ARArmDetection
         [Tooltip("When the full-body pass finds 0 persons, scan raw YOLO anchors for just arm keypoints.\n" +
                  "Enables detection of an isolated arm with no torso visible.")]
         [SerializeField] private bool _armOnlyFallback = true;
-        [Tooltip("Minimum visibility for both shoulder AND wrist to count as an arm-only candidate.")]
-        [Range(0f, 0.5f)][SerializeField] private float _armOnlyKeypointThreshold = 0.08f;
+        [Tooltip("Minimum visibility for both shoulder AND wrist to count as an arm-only candidate.\n" +
+                 "Too low fires on noise anchors (ghost boxes with nothing in view). Compare against " +
+                 "MaxArmKP in the debug HUD: set this comfortably above the empty-scene value and " +
+                 "below the value seen when the real arm is in frame.")]
+        [Range(0f, 1f)][SerializeField] private float _armOnlyKeypointThreshold = 0.25f;
+        [Tooltip("Minimum shoulder→wrist distance in model pixels for an arm-only candidate. " +
+                 "Rejects degenerate noise anchors whose keypoints collapse to a point.")]
+        [SerializeField] private float _armOnlyMinArmPixels = 50f;
 
         // ── Runtime ────────────────────────────────────────────────────────────────────
 
@@ -271,9 +277,13 @@ namespace ARArmDetection
             LastArmOnlyMaxScore = globalMax;
 
             // Collect candidates above the threshold, sorted by score descending.
+            // Geometric plausibility (arm length, in-frame keypoints) is checked too,
+            // because raw noise anchors can carry high visibility scores with
+            // degenerate keypoint geometry.
             var cands = new List<int>(64);
             for (int i = 0; i < anchors; i++)
-                if (armScores[i] >= _armOnlyKeypointThreshold) cands.Add(i);
+                if (armScores[i] >= _armOnlyKeypointThreshold && IsPlausibleArm(data, anchors, i))
+                    cands.Add(i);
             if (cands.Count == 0) return;
 
             cands.Sort((a, b) => armScores[b].CompareTo(armScores[a]));
@@ -313,6 +323,40 @@ namespace ARArmDetection
                         suppressed[b] = true;
                 }
             }
+        }
+
+        /// <summary>
+        /// Rejects implausible arm-only anchors: the best arm pair must have a sensible
+        /// shoulder→wrist pixel length and both keypoints inside the model input frame.
+        /// Positions here are model-space (pre-scale, 0.._inputSize).
+        /// </summary>
+        private bool IsPlausibleArm(float[] data, int anchors, int anchorIdx)
+        {
+            float bestScore = -1f;
+            Vector2 sh = default, wr = default;
+            foreach (var (s, w) in ArmPairs)
+            {
+                float sv = data[(5 + s * 3 + 2) * anchors + anchorIdx];
+                float wv = data[(5 + w * 3 + 2) * anchors + anchorIdx];
+                float sc = Mathf.Min(sv, wv);
+                if (sc > bestScore)
+                {
+                    bestScore = sc;
+                    sh = new Vector2(data[(5 + s * 3 + 0) * anchors + anchorIdx],
+                                     data[(5 + s * 3 + 1) * anchors + anchorIdx]);
+                    wr = new Vector2(data[(5 + w * 3 + 0) * anchors + anchorIdx],
+                                     data[(5 + w * 3 + 1) * anchors + anchorIdx]);
+                }
+            }
+
+            if (Vector2.Distance(sh, wr) < _armOnlyMinArmPixels) return false;
+
+            const float Margin = 8f;
+            if (sh.x < -Margin || sh.x > _inputSize + Margin ||
+                sh.y < -Margin || sh.y > _inputSize + Margin) return false;
+            if (wr.x < -Margin || wr.x > _inputSize + Margin ||
+                wr.y < -Margin || wr.y > _inputSize + Margin) return false;
+            return true;
         }
 
         // ── Shared helpers ─────────────────────────────────────────────────────────────

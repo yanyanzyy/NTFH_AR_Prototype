@@ -32,7 +32,29 @@ namespace ARArmDetection
         [Range(0f, 1f)]
         [SerializeField] private float _opacity = 1f;
 
-        [Header("Cylinder size")]
+        [Header("Fixed-size mode (mannequin arm)")]
+        [Tooltip("When enabled, the cylinder keeps a CONSTANT real-world size matched to the physical " +
+                 "mannequin arm instead of stretching to the detected shoulder→wrist span each frame. " +
+                 "The detection only drives position and orientation; apparent size changes naturally " +
+                 "with distance because the cylinder is a fixed-size world-space object.")]
+        [SerializeField] private bool _useFixedSize = true;
+
+        /// <summary>True when the overlay renders at a constant real-world size.</summary>
+        public bool UseFixedSize => _useFixedSize;
+        /// <summary>
+        /// The physical arm length the overlay renders at. ArmDetectionManager uses this
+        /// as the calibration constant when deriving depth from the detected pixel span,
+        /// which makes the projected shoulder→wrist distance equal this length — so the
+        /// overlay ends line up with the detected arm exactly.
+        /// </summary>
+        public float FixedLengthMeters => _fixedLengthMeters;
+        [Tooltip("Real shoulder→wrist length of the mannequin arm in metres. " +
+                 "Measure the physical trainer arm (Limbs & Things venipuncture arm ≈ 0.55 m) and enter it here.")]
+        [SerializeField] private float _fixedLengthMeters = 0.55f;
+        [Tooltip("Real diameter of the mannequin arm in metres (forearm ≈ 0.085 m).")]
+        [SerializeField] private float _fixedDiameterMeters = 0.085f;
+
+        [Header("Stretch-to-fit mode (used when fixed size is off)")]
         [Tooltip("Cylinder diameter as a fraction of detected arm length. " +
                  "Increase to make the overlay wider, decrease to make it narrower.")]
         [SerializeField] private float _thicknessRatio = 0.22f;
@@ -142,10 +164,23 @@ namespace ARArmDetection
             // Unity Cylinder default: height = 2 units (Y: -1 to +1), radius = 0.5 units.
             //   scale.y = length / 2   → makes cylinder exactly arm-length tall
             //   scale.x = scale.z = thickness  → default radius 0.5 * scale = thickness/2
-            float thickness = Mathf.Clamp(length * _thicknessRatio, _minThickness, _maxThickness);
+            float renderLength, thickness;
+            if (_useFixedSize)
+            {
+                // Fixed-size mode: the cylinder always matches the physical mannequin
+                // arm. Detection noise in bbox / keypoint span cannot stretch it —
+                // only position and orientation come from the detection.
+                renderLength = _fixedLengthMeters;
+                thickness    = _fixedDiameterMeters;
+            }
+            else
+            {
+                renderLength = length;
+                thickness    = Mathf.Clamp(length * _thicknessRatio, _minThickness, _maxThickness);
+            }
 
             _mesh.SetPositionAndRotation(mid, rotation);
-            _mesh.localScale = new Vector3(thickness, length * 0.5f, thickness);
+            _mesh.localScale = new Vector3(thickness, renderLength * 0.5f, thickness);
 
             // Apply tiling, offset and opacity every frame so Inspector tweaks take effect live.
             _material.SetTextureScale ("_BaseMap", _textureTiling);
@@ -153,7 +188,8 @@ namespace ARArmDetection
             _material.SetColor("_BaseColor", new Color(_color.r, _color.g, _color.b, _opacity));
 
             if (!_mesh.gameObject.activeSelf)
-                Debug.Log($"[ArmOverlay] Cylinder activated — mid={mid} len={length:F2}m thickness={thickness:F3}m");
+                Debug.Log($"[ArmOverlay] Cylinder activated — mid={mid} len={renderLength:F2}m thickness={thickness:F3}m" +
+                          (_useFixedSize ? " (fixed size)" : ""));
 
             _mesh.gameObject.SetActive(true);
         }

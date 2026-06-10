@@ -43,6 +43,22 @@ namespace ARArmDetection
         [Tooltip("Minimum keypoint confidence for shoulder and wrist to accept an arm.")]
         [SerializeField, Range(0f, 1f)] private float _keypointConfidence = 0.15f;
 
+        [Header("Tracking & smoothing")]
+        [Tooltip("Consecutive inference hits (in roughly the same place) required before the overlay " +
+                 "locks on. Filters out single-frame false positives that cause ghost boxes.")]
+        [SerializeField, Range(1, 10)] private int _acquireConsecutiveHits = 3;
+        [Tooltip("Seconds to hold the lock (overlay stays put) after detection drops out, bridging " +
+                 "missed inference frames before the overlay disappears.")]
+        [SerializeField] private float _loseGraceSeconds = 0.5f;
+        [Tooltip("Max distance (m) a new detection may jump from the locked arm and still be accepted " +
+                 "as the same target. Larger jumps are ignored; the lock re-acquires after the grace period.")]
+        [SerializeField] private float _maxTrackJumpMeters = 0.6f;
+        [Tooltip("SmoothDamp time constant (s) for the overlay endpoints. Higher = steadier but laggier.")]
+        [SerializeField] private float _positionSmoothTime = 0.12f;
+        [Tooltip("Locked-target updates smaller than this (m) are ignored, so the overlay stays perfectly " +
+                 "still on a static mannequin instead of micro-wandering with detection noise.")]
+        [SerializeField] private float _deadZoneMeters = 0.02f;
+
         [Header("Debug")]
         [Tooltip("Optional debug HUD. Attach ArmDetectionDebugHUD component here.")]
         [SerializeField] private ArmDetectionDebugHUD _debugHUD;
@@ -52,6 +68,20 @@ namespace ARArmDetection
         // ── Private state ──────────────────────────────────────────────────────────────
 
         private int _frameCounter;
+
+        // Tracking state: the overlay only renders while locked. A lock is acquired
+        // after _acquireConsecutiveHits nearby detections and held through dropouts
+        // for _loseGraceSeconds. Endpoints are SmoothDamped every render frame.
+        private bool    _locked;
+        private int     _hitStreak;
+        private Vector3 _streakWrist;
+        private Vector3 _targetShoulder, _targetWrist;
+        private Vector3 _smoothShoulder, _smoothWrist;
+        private Vector3 _shoulderVel,    _wristVel;
+        private float   _lastAcceptTime = float.NegativeInfinity;
+
+        /// <summary>True while the tracker has a locked target (overlay visible).</summary>
+        public bool IsLocked => _locked;
 
         // Readable by the debug HUD.
         public int    InferenceCount    { get; private set; }
@@ -133,8 +163,16 @@ namespace ARArmDetection
             if (!_detector.IsReady)       { ManagerStatus = "Waiting: model loading";      return; }
 
             _frameCounter++;
-            if (_frameCounter % Mathf.Max(1, _inferEveryNFrames) != 0) return;
+            if (_frameCounter % Mathf.Max(1, _inferEveryNFrames) == 0)
+                RunInference();
 
+            // Tracking + rendering run every frame (not just inference frames) so the
+            // overlay glides smoothly between detections instead of teleporting.
+            UpdateTrackingAndRender();
+        }
+
+        private void RunInference()
+        {
             ManagerStatus = IsArmOnlyMode ? "Running [ARM-ONLY]" : "Running [Normal]";
             var persons = _detector.Run(_cameraSource.CurrentTexture);
             InferenceCount++;
@@ -172,7 +210,13 @@ namespace ARArmDetection
                 { selectedIdx = i; selectedSide = Side.Right; }
             }
 
-            SelectedDetectionIndex = found ? selectedIdx : -1;
+            // Feed the tracker BEFORE choosing what to expose: a hit that completes the
+            // acquisition streak locks on this very frame.
+            FeedTracker(found, best);
+
+            // Only expose a selection (debug bbox / keypoints) while locked, so
+            // single-frame false positives never draw anything.
+            SelectedDetectionIndex = (found && _locked) ? selectedIdx : -1;
             SelectedDetectionSide  = selectedSide;
 
             // ── Compose arm status string ──────────────────────────────────────────────
@@ -181,7 +225,14 @@ namespace ARArmDetection
                 string mode = (_detector != null && _detector.LastRunWasArmOnlyFallback)
                     ? " [arm-only mode]" : "";
                 string depthSrc = depthRaycastHits > 0 ? "depth-API" : "heuristic";
-                LastArmStatus = $"OK — {best.Depth:F1} m away ({depthSrc}){mode}";
+                LastArmStatus = _locked
+                    ? $"LOCKED — {best.Depth:F1} m ({depthSrc}){mode}"
+                    : $"Acquiring {_hitStreak}/{_acquireConsecutiveHits} — {best.Depth:F1} m ({depthSrc}){mode}";
+            }
+            else if (_locked)
+            {
+                float graceLeft = _loseGraceSeconds - (Time.time - _lastAcceptTime);
+                LastArmStatus = $"Lost — holding lock {Mathf.Max(0f, graceLeft):F1}s";
             }
             else if (persons.Count == 0)
             {
@@ -204,20 +255,89 @@ namespace ARArmDetection
                 LastArmStatus = "No arm selected (unexpected)";
             }
 
-            // Use the calibrated camera position when available so the overlay's "face
-            // the camera" maths matches the pose used to build Shoulder/Wrist world coords.
-            var camPose = _cameraSource.CameraPose;
-            var camTransform = _cameraSource.CameraTransform;
-            // Wrap the cached pose in a transient transform if needed — ArmOverlay reads .position.
-            // The existing API takes a Transform; we pass CameraTransform but the world coords
-            // were already computed against camPose, so this stays consistent.
-            if (found)
-                _overlay.Render((best.Shoulder, best.Wrist), camTransform);
-            else
-                _overlay.Render(null, camTransform);
-
             LastFoundArm = found;
             _debugHUD?.ReportDetections(persons.Count, found ? 1 : 0);
+        }
+
+        // ── Tracking ───────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Consumes the best candidate of an inference frame. Acquires a lock after
+        /// _acquireConsecutiveHits spatially-consistent hits; while locked, accepts
+        /// updates only within _maxTrackJumpMeters of the current target so the overlay
+        /// cannot teleport to a stray detection.
+        /// </summary>
+        private void FeedTracker(bool found, in ArmCandidate cand)
+        {
+            if (!found)
+            {
+                if (!_locked) _hitStreak = 0;
+                return; // while locked, dropouts are handled by the grace timer
+            }
+
+            if (_locked)
+            {
+                float jump = Mathf.Max(Vector3.Distance(cand.Wrist,    _targetWrist),
+                                       Vector3.Distance(cand.Shoulder, _targetShoulder));
+                if (jump <= _maxTrackJumpMeters)
+                {
+                    _lastAcceptTime = Time.time;
+                    // Dead zone: tiny movements are detection noise, not real motion —
+                    // leave the target untouched so the overlay sits rock-still.
+                    if (jump > _deadZoneMeters)
+                    {
+                        _targetShoulder = cand.Shoulder;
+                        _targetWrist    = cand.Wrist;
+                    }
+                }
+                return;
+            }
+
+            // Acquisition: hits must land near the previous hit to grow the streak.
+            if (_hitStreak > 0 && Vector3.Distance(cand.Wrist, _streakWrist) <= _maxTrackJumpMeters)
+                _hitStreak++;
+            else
+                _hitStreak = 1;
+            _streakWrist = cand.Wrist;
+
+            if (_hitStreak >= _acquireConsecutiveHits)
+            {
+                _locked         = true;
+                _targetShoulder = _smoothShoulder = cand.Shoulder;
+                _targetWrist    = _smoothWrist    = cand.Wrist;
+                _shoulderVel    = _wristVel       = Vector3.zero;
+                _lastAcceptTime = Time.time;
+                Debug.Log($"[ArmManager] Lock acquired after {_hitStreak} consecutive hits.");
+            }
+        }
+
+        /// <summary>
+        /// Runs every render frame: expires the lock after the grace period, smooths the
+        /// overlay endpoints toward the latest accepted detection, and renders.
+        /// </summary>
+        private void UpdateTrackingAndRender()
+        {
+            if (_locked && Time.time - _lastAcceptTime > _loseGraceSeconds)
+            {
+                _locked    = false;
+                _hitStreak = 0;
+                SelectedDetectionIndex = -1;
+                Debug.Log("[ArmManager] Lock lost — grace period expired.");
+            }
+
+            var camTransform = _cameraSource.CameraTransform;
+            if (_locked)
+            {
+                _smoothShoulder = Vector3.SmoothDamp(_smoothShoulder, _targetShoulder,
+                                                     ref _shoulderVel, _positionSmoothTime);
+                _smoothWrist    = Vector3.SmoothDamp(_smoothWrist, _targetWrist,
+                                                     ref _wristVel, _positionSmoothTime);
+                _overlay.Render((_smoothShoulder, _smoothWrist), camTransform);
+            }
+            else
+            {
+                _overlay.Render(null, camTransform);
+            }
         }
 
         // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -252,7 +372,13 @@ namespace ARArmDetection
         /// </summary>
         private float EstimateDepthFromArmLength(PersonDetection p, float focalPx)
         {
-            const float AssumedArmLengthMeters = 0.65f; // shoulder → wrist, typical adult
+            // When the overlay renders at a fixed physical size, use that SAME length to
+            // solve for depth. depth = realLength * focal / pixelSpan means the projected
+            // shoulder→wrist world span comes out exactly equal to the overlay length, so
+            // the cylinder ends coincide with the detected arm ends — perfect registration.
+            float armLengthMeters = (_overlay != null && _overlay.UseFixedSize)
+                ? _overlay.FixedLengthMeters
+                : 0.65f; // shoulder → wrist, typical adult
 
             // Pick the arm side with the highest combined shoulder+wrist confidence.
             float bestConf = 0f;
@@ -277,7 +403,7 @@ namespace ARArmDetection
             float armPx = Vector2.Distance(bestShoulder, bestWrist);
             if (armPx < 5f) return 0f;
 
-            return Mathf.Clamp(AssumedArmLengthMeters * focalPx / armPx,
+            return Mathf.Clamp(armLengthMeters * focalPx / armPx,
                                _minDepthMeters, _maxDepthMeters);
         }
 
