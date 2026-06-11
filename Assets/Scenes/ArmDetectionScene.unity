@@ -2036,7 +2036,7 @@ GameObject:
   - component: {fileID: 1511012892}
   - component: {fileID: 1511012891}
   m_Layer: 0
-  m_Name: ArmOverlay
+  m_Name: Overlay
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -2054,17 +2054,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e824a19dec9524c19a1646ea9ae97187, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmOverlay
-  _armModelPrefab: {fileID: -8098169881513260187, guid: c6f3c4bfaeb24194e93917b3df9f63bd, type: 3}
-  _modelArmAxis: {x: 0, y: 0, z: 1}
-  _naturalArmLengthMeters: 0.65
-  _scaleToFitDetectedLength: 1
-  _pivotOffset: 0.5
   _color: {r: 1, g: 0, b: 0, a: 1}
   _thicknessRatio: 0.22
   _minThickness: 0.05
   _maxThickness: 0.18
   _forceVisible: 0
-  _showDebugQuadAlongsideModel: 0
 --- !u!4 &1511012892
 Transform:
   m_ObjectHideFlags: 0
@@ -2601,7 +2595,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmDetectionManager
   _cameraSource: {fileID: 899930729}
   _customArmDetector: {fileID: 2000764473}
-  _mediaPipeDetector: {fileID: 1277423723}
+  _mediaPipeDetector: {fileID: 0}
   _wearerFilter: {fileID: 969411798}
   _overlay: {fileID: 1511012891}
   _useCustomArmDetector: 1
