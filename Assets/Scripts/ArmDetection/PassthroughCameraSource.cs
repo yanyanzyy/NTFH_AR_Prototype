@@ -160,8 +160,8 @@ namespace ARArmDetection
 
         /// <summary>
         /// Resolves the current texture, intrinsics, and camera pose. Cached so multiple
-        /// calls within a single frame return identical values (essential for inference,
-        /// because YOLO and the bounding-box visualiser must project against the same pose).
+        /// calls within a single frame return identical values (essential so detection
+        /// and the bounding-box visualiser project against the same pose).
         /// </summary>
         private void EnsureRefreshed()
         {
