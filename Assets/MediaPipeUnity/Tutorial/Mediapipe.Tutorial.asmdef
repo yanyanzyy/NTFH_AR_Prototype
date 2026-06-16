@@ -1,15 +1,15 @@
 {
-    "name": "Mediapipe.Runtime",
+    "name": "Mediapipe.Tutorial",
     "rootNamespace": "",
-    "references": [],
+    "references": [
+        "Mediapipe.Runtime"
+    ],
     "includePlatforms": [],
     "excludePlatforms": [],
-    "allowUnsafeCode": true,
+    "allowUnsafeCode": false,
     "overrideReferences": true,
     "precompiledReferences": [
         "Google.Protobuf.dll",
-        "System.Buffers.dll",
-        "System.Memory.dll",
         "System.Runtime.CompilerServices.Unsafe.dll"
     ],
     "autoReferenced": false,

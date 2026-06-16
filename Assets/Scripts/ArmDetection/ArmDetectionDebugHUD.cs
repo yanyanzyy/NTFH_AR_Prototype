@@ -11,7 +11,7 @@ namespace ARArmDetection
     public class ArmDetectionDebugHUD : MonoBehaviour
     {
         [SerializeField] private PassthroughCameraSource _cameraSource;
-        [SerializeField] private MediaPipeHandArmDetector _mediaPipeDetector;
+        [SerializeField] private YoloPoseDetector        _detector;
         [SerializeField] private ArmDetectionManager     _manager;
         [SerializeField] private float                   _distanceMeters = 1.5f;
 
@@ -47,8 +47,7 @@ namespace ARArmDetection
             }
 
             bool hasFrame   = _cameraSource != null && _cameraSource.HasFrame;
-            bool mediaPipeReady = _mediaPipeDetector != null && _mediaPipeDetector.IsReady;
-            bool modelReady = mediaPipeReady;
+            bool modelReady = _detector     != null && _detector.IsReady;
 
             // Read directly from manager so this works even if ReportDetections isn't wired.
             int  inferCount  = _manager != null ? _manager.InferenceCount  : _frameCount;
@@ -58,7 +57,8 @@ namespace ARArmDetection
             string camStatus  = _cameraSource != null ? _cameraSource.CameraManagerStatus : "—";
             string mgrStatus  = _manager     != null ? _manager.ManagerStatus            : "<color=red>(manager not assigned!)</color>";
             string armStatus  = _manager     != null ? _manager.LastArmStatus            : "—";
-            string modeStr    = "<color=orange>ARM DETECTION</color>";
+            string modeStr    = (_manager != null && _manager.IsArmOnlyMode)
+                ? "<color=orange>ARM-ONLY</color>" : "<color=lime>Normal</color>";
             bool   calibrated = _cameraSource != null && _cameraSource.HasCalibratedProjection;
             string projStr    = calibrated
                 ? "<color=lime>CALIBRATED</color> (PCA intrinsics)"
@@ -72,8 +72,7 @@ namespace ARArmDetection
                 $"HasFrame  : {(hasFrame   ? "<color=lime>YES</color>" : "<color=red>NO</color>")}  " +
                 $"{(_cameraSource != null ? $"{_cameraSource.Width}x{_cameraSource.Height}" : "—")}\n" +
                 $"Projection: {projStr}\n" +
-                $"Model     : {(modelReady ? "<color=lime>READY</color>" : "<color=red>NOT READY</color>")}  " +
-                $"MediaPipe={(mediaPipeReady ? "on" : "off")}\n" +
+                $"Model     : {(modelReady ? "<color=lime>READY</color>" : "<color=red>NOT READY</color>")}\n" +
                 $"Inference : {inferCount} runs\n" +
                 $"Persons   : {personCount} detected\n" +
                 $"Arm status: {armStatus}\n" +

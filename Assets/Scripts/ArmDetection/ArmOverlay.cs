@@ -86,14 +86,7 @@ namespace ARArmDetection
 
         private void Awake()
         {
-            // 3D model
-            if (_armModelPrefab != null)
-            {
-                var modelGo = Instantiate(_armModelPrefab, transform);
-                modelGo.name = "ArmModelOverlay";
-                modelGo.SetActive(false);
-                _model = modelGo.transform;
-            }
+            _material = CreateOverlayMaterial();
 
             // Cylinder is visible from all angles — the user can walk around the arm.
             var go = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
@@ -116,7 +109,7 @@ namespace ARArmDetection
 
         private void OnDestroy()
         {
-            if (_quadMaterial != null) Destroy(_quadMaterial);
+            if (_material != null) Destroy(_material);
         }
 
         // ── Public API ─────────────────────────────────────────────────────────────────
@@ -143,6 +136,7 @@ namespace ARArmDetection
                 {
                     Debug.LogWarning($"[ArmOverlay] Arm too short ({length:F3} m) — cylinder hidden. " +
                                      $"Shoulder={shoulder} Wrist={wrist}. " +
+                                     "Check Projection line in debug HUD: FALLBACK means wrong camera is being used. " +
                                      "Enable _forceVisible on ArmOverlay to override.");
                     _mesh.gameObject.SetActive(false);
                     return;
@@ -200,17 +194,14 @@ namespace ARArmDetection
             _mesh.gameObject.SetActive(true);
         }
 
-        private void SetVisible(bool visible)
-        {
-            if (_model != null) _model.gameObject.SetActive(visible);
-            _quad.gameObject.SetActive(visible);
-        }
+        // ── Private helpers ────────────────────────────────────────────────────────────
 
-        private Material CreateQuadMaterial()
+        private Material CreateOverlayMaterial()
         {
             var shader = Shader.Find("ArmDetection/ArmOverlayUnlit")
                       ?? Shader.Find("Universal Render Pipeline/Unlit")
                       ?? Shader.Find("Unlit/Color");
+
             var mat = new Material(shader);
 
             if (_overlayTexture != null)

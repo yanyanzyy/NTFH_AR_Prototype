@@ -28,7 +28,7 @@ namespace ARArmDetection
                 {
                     if (t == null) continue;
                     if (!cameraSource.WorldToImagePoint(t.position, out var proj)) continue;
-                    if (IsNearDetectedArm(proj, arm, _imageRadiusPixels)) return true;
+                    if (Vector2.Distance(proj, arm.WristImage) <= _imageRadiusPixels) return true;
                 }
             }
 
@@ -41,7 +41,7 @@ namespace ARArmDetection
                     var wristPos = FindWristPosition(skel);
                     if (wristPos == null) continue;
                     if (!cameraSource.WorldToImagePoint(wristPos.Value, out var proj)) continue;
-                    if (IsNearDetectedArm(proj, arm, _imageRadiusPixels)) return true;
+                    if (Vector2.Distance(proj, arm.WristImage) <= _imageRadiusPixels) return true;
                 }
             }
 
@@ -49,24 +49,6 @@ namespace ARArmDetection
         }
 
         // ── Static helpers ─────────────────────────────────────────────────────────────
-
-        private static bool IsNearDetectedArm(Vector2 wearerWristImage, ArmDetection arm, float radiusPixels)
-        {
-            float radius = Mathf.Max(1f, radiusPixels);
-            if (Vector2.Distance(wearerWristImage, arm.WristImage) <= radius) return true;
-            if (Vector2.Distance(wearerWristImage, arm.ElbowImage) <= radius) return true;
-            return PointToSegmentDistance(wearerWristImage, arm.ShoulderImage, arm.WristImage) <= radius;
-        }
-
-        private static float PointToSegmentDistance(Vector2 point, Vector2 a, Vector2 b)
-        {
-            Vector2 ab = b - a;
-            float lenSq = ab.sqrMagnitude;
-            if (lenSq < 0.0001f) return Vector2.Distance(point, a);
-
-            float t = Mathf.Clamp01(Vector2.Dot(point - a, ab) / lenSq);
-            return Vector2.Distance(point, a + ab * t);
-        }
 
         private static bool IsSkeletonReady(OVRSkeleton skel)
             => skel != null && skel.IsInitialized && skel.Bones != null && skel.Bones.Count > 0;
