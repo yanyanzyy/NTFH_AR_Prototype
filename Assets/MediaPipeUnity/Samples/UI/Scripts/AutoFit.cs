@@ -24,12 +24,16 @@ namespace Mediapipe.Unity
     private void LateUpdate()
     {
       var rectTransform = GetComponent<RectTransform>();
+      if (rectTransform == null) return;
       if (rectTransform.rect.width == 0 || rectTransform.rect.height == 0)
       {
         return;
       }
 
-      var parentRect = gameObject.transform.parent.gameObject.GetComponent<RectTransform>().rect;
+      if (gameObject.transform.parent == null) return;
+      var parentRectTransform = gameObject.transform.parent.gameObject.GetComponent<RectTransform>();
+      if (parentRectTransform == null) return;
+      var parentRect = parentRectTransform.rect;
       var (width, height) = GetBoundingBoxSize(rectTransform);
 
       var ratio = parentRect.width / width;

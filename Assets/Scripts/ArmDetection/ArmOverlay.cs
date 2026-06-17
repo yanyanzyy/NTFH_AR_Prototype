@@ -3,13 +3,22 @@ using UnityEngine;
 namespace ARArmDetection
 {
     /// <summary>
-    /// Renders a textured cylinder aligned along the closest detected arm.
+    /// Renders a world-space overlay aligned along the closest detected arm.
     ///
-    /// A cylinder is used instead of a flat quad so the overlay is visible from
-    /// any viewing angle — the user can walk around the arm and always see the texture.
+    /// When a 3D model prefab is assigned it is used as the overlay; otherwise
+    /// the component falls back to a simple coloured quad (useful for debugging).
     ///
-    /// Assign your arm photo to _overlayTexture in the Inspector; leave it empty to
-    /// show a solid colour instead (useful for debugging).
+    /// 3D MODEL SETUP
+    /// --------------
+    /// 1. Assign your arm prefab (e.g. "3dScanArm") to _armModelPrefab.
+    /// 2. Set _modelArmAxis to the local axis of the prefab that points from
+    ///    the shoulder end toward the wrist end (default: Vector3.forward / +Z).
+    /// 3. Set _naturalArmLengthMeters to the real-world length the model
+    ///    represents at scale (1,1,1) — used when _scaleToFitDetectedLength is on.
+    /// 4. If the prefab pivot is not at the arm's midpoint, adjust _pivotOffset:
+    ///      0.0 = pivot is at the shoulder end
+    ///      0.5 = pivot is at the midpoint  (default)
+    ///      1.0 = pivot is at the wrist end
     ///
     /// DEPTH / OCCLUSION
     /// -----------------
@@ -20,96 +29,79 @@ namespace ARArmDetection
     /// </summary>
     public class ArmOverlay : MonoBehaviour
     {
-        [Tooltip("Photo or texture to wrap around the detected arm. " +
-                 "Leave empty to show a solid colour instead.")]
-        [SerializeField] private Texture2D _overlayTexture;
+        // ── 3D model ───────────────────────────────────────────────────────────────────
+        [Header("3D Model (optional)")]
+        [Tooltip("Prefab to use as the arm overlay. If unassigned, falls back to the debug quad.")]
+        [SerializeField] private GameObject _armModelPrefab;
 
-        [Tooltip("Solid colour used when no texture is assigned, or as a tint when one is. " +
-                 "Set to white for an accurate texture with no tint.")]
-        [SerializeField] private Color _color = Color.red;
+        [Tooltip("Which local axis of the prefab points from the shoulder end toward the wrist end.")]
+        [SerializeField] private Vector3 _modelArmAxis = Vector3.forward;
 
-        [Tooltip("0 = fully transparent, 1 = fully opaque. Values like 0.6–0.8 let you see the real arm through the overlay.")]
-        [Range(0f, 1f)]
-        [SerializeField] private float _opacity = 1f;
+        [Tooltip("Real-world arm length (metres) that the prefab represents at its natural scale (1,1,1). " +
+                 "Only used when Scale To Fit Detected Length is enabled.")]
+        [SerializeField] private float _naturalArmLengthMeters = 0.65f;
 
-        [Header("Fixed-size mode (mannequin arm)")]
-        [Tooltip("When enabled, the cylinder keeps a CONSTANT real-world size matched to the physical " +
-                 "mannequin arm instead of stretching to the detected shoulder→wrist span each frame. " +
-                 "The detection only drives position and orientation; apparent size changes naturally " +
-                 "with distance because the cylinder is a fixed-size world-space object.")]
-        [SerializeField] private bool _useFixedSize = true;
+        [Tooltip("Uniformly scale the model so its length matches the detected shoulder-to-wrist distance. " +
+                 "Disable this if your depth estimate is too noisy and you prefer a fixed-size model.")]
+        [SerializeField] private bool _scaleToFitDetectedLength = true;
 
-        /// <summary>True when the overlay renders at a constant real-world size.</summary>
-        public bool UseFixedSize => _useFixedSize;
-        /// <summary>
-        /// The physical arm length the overlay renders at. ArmDetectionManager uses this
-        /// as the calibration constant when deriving depth from the detected pixel span,
-        /// which makes the projected shoulder→wrist distance equal this length — so the
-        /// overlay ends line up with the detected arm exactly.
-        /// </summary>
-        public float FixedLengthMeters => _fixedLengthMeters;
-        [Tooltip("Real shoulder→wrist length of the mannequin arm in metres. " +
-                 "Measure the physical trainer arm (Limbs & Things venipuncture arm ≈ 0.55 m) and enter it here.")]
-        [SerializeField] private float _fixedLengthMeters = 0.55f;
-        [Tooltip("Real diameter of the mannequin arm in metres (forearm ≈ 0.085 m).")]
-        [SerializeField] private float _fixedDiameterMeters = 0.085f;
+        [Tooltip("Where the prefab's pivot sits along the arm:\n" +
+                 "  0.0 = shoulder end\n  0.5 = midpoint (default)\n  1.0 = wrist end")]
+        [SerializeField, Range(0f, 1f)] private float _pivotOffset = 0.5f;
 
-        [Header("Stretch-to-fit mode (used when fixed size is off)")]
-        [Tooltip("Cylinder diameter as a fraction of detected arm length. " +
-                 "Increase to make the overlay wider, decrease to make it narrower.")]
+        // ── Debug quad (fallback) ──────────────────────────────────────────────────────
+        [Header("Debug Quad (fallback when no prefab assigned)")]
+        [SerializeField] private Color _color          = Color.red;
+        [Tooltip("Quad thickness as a fraction of arm length.")]
         [SerializeField] private float _thicknessRatio = 0.22f;
         [SerializeField] private float _minThickness   = 0.05f;
         [SerializeField] private float _maxThickness   = 0.18f;
 
-        [Header("Texture mapping")]
-        [Tooltip("How many times the image tiles on the cylinder surface.\n" +
-                 "X = around the circumference (1 = wraps once around, 2 = twice, 0.5 = half).\n" +
-                 "Y = along the arm length (1 = image fills shoulder-to-wrist exactly, " +
-                 "2 = image repeats twice along the arm).")]
-        [SerializeField] private Vector2 _textureTiling = Vector2.one;
-
-        [Tooltip("Shifts the texture on the cylinder.\n" +
-                 "Y = move image up (+) or down (-) along the arm.\n" +
-                 "X = rotate the image around the cylinder.")]
-        [SerializeField] private Vector2 _textureOffset = Vector2.zero;
-
         [Header("Debug")]
-        [Tooltip("Force the overlay visible even when projected arm length is tiny. " +
+        [Tooltip("Force the overlay visible even when the projected arm length is tiny (< 0.05 m). " +
                  "Useful in Editor where fallback projection may produce short arms. " +
                  "Disable before shipping.")]
         [SerializeField] private bool _forceVisible = false;
+        [Tooltip("Show the debug quad alongside the 3D model for alignment checking.")]
+        [SerializeField] private bool _showDebugQuadAlongsideModel = false;
 
-        private Transform _mesh;
-        private Material  _material;
+        // ── Private state ──────────────────────────────────────────────────────────────
+        private Transform _model;
+        private Transform _quad;
+        private Material  _quadMaterial;
 
         // ── Unity lifecycle ────────────────────────────────────────────────────────────
 
         private void Awake()
         {
-            _material = CreateOverlayMaterial();
+            // 3D model
+            if (_armModelPrefab != null)
+            {
+                var modelGo = Instantiate(_armModelPrefab, transform);
+                modelGo.name = "ArmModelOverlay";
+                modelGo.SetActive(false);
+                _model = modelGo.transform;
+            }
 
-            // Cylinder is visible from all angles — the user can walk around the arm.
-            var go = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
-            go.name = "ArmOverlayCylinder";
-            go.transform.SetParent(transform, false);
-
-            var col = go.GetComponent<Collider>();
-            if (col != null) Destroy(col);
-
-            var mr = go.GetComponent<MeshRenderer>();
-            mr.sharedMaterial       = _material;
+            // Debug quad (always created; hidden unless needed)
+            _quadMaterial = CreateQuadMaterial();
+            var quadGo = GameObject.CreatePrimitive(PrimitiveType.Quad);
+            quadGo.name = "ArmOverlayQuad";
+            quadGo.transform.SetParent(transform, false);
+            Destroy(quadGo.GetComponent<Collider>());
+            var mr = quadGo.GetComponent<MeshRenderer>();
+            mr.sharedMaterial       = _quadMaterial;
             mr.shadowCastingMode    = UnityEngine.Rendering.ShadowCastingMode.Off;
             mr.receiveShadows       = false;
             mr.lightProbeUsage      = UnityEngine.Rendering.LightProbeUsage.Off;
             mr.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
-
-            go.SetActive(false);
-            _mesh = go.transform;
+            quadGo.SetActive(false);
+            _quad = quadGo.transform;
         }
 
         private void OnDestroy()
         {
-            if (_material != null) Destroy(_material);
+            if (_quadMaterial != null) Destroy(_quadMaterial);
         }
 
         // ── Public API ─────────────────────────────────────────────────────────────────
@@ -122,103 +114,115 @@ namespace ARArmDetection
         {
             if (arm == null)
             {
-                _mesh.gameObject.SetActive(false);
+                SetVisible(false);
                 return;
             }
 
             var (shoulder, wrist) = arm.Value;
-            Vector3 armDir = wrist - shoulder;
-            float   length = armDir.magnitude;
+            Vector3 armVec = wrist - shoulder;
+            float length = armVec.magnitude;
 
             if (length < 0.05f)
             {
                 if (!_forceVisible)
                 {
-                    Debug.LogWarning($"[ArmOverlay] Arm too short ({length:F3} m) — cylinder hidden. " +
+                    Debug.LogWarning($"[ArmOverlay] Arm too short ({length:F3} m) — overlay hidden. " +
                                      $"Shoulder={shoulder} Wrist={wrist}. " +
-                                     "Check Projection line in debug HUD: FALLBACK means wrong camera is being used. " +
                                      "Enable _forceVisible on ArmOverlay to override.");
-                    _mesh.gameObject.SetActive(false);
+                    SetVisible(false);
                     return;
                 }
 
-                // Force-visible: use the midpoint + a 0.6 m stand-in arm.
-                var standInMid = (shoulder + wrist) * 0.5f;
-                var standInDir = armDir.sqrMagnitude > 1e-6f ? armDir.normalized : Vector3.up;
-                shoulder = standInMid - standInDir * 0.3f;
-                wrist    = standInMid + standInDir * 0.3f;
-                armDir   = wrist - shoulder;
-                length   = armDir.magnitude;
-                Debug.Log($"[ArmOverlay] _forceVisible active — original arm too short; using 0.6 m stand-in.");
+                // Force-visible: stand-in 0.6 m arm at midpoint
+                Vector3 mid0 = (shoulder + wrist) * 0.5f;
+                Vector3 dir0 = armVec.sqrMagnitude > 1e-6f ? armVec.normalized : Vector3.up;
+                shoulder = mid0 - dir0 * 0.3f;
+                wrist    = mid0 + dir0 * 0.3f;
+                armVec   = wrist - shoulder;
+                length   = armVec.magnitude;
             }
 
-            // ── Position and orient the cylinder ──────────────────────────────────────
-            Vector3 up  = armDir / length;
-            Vector3 mid = (shoulder + wrist) * 0.5f;
+            Vector3 armDir = armVec / length;
+            Vector3 mid    = Vector3.Lerp(shoulder, wrist, 0.5f);
 
-            // Align the cylinder's local Y axis with the arm direction.
-            // A cylinder needs no "face camera" calculation — it is round and looks
-            // identical from every angle perpendicular to the arm axis.
-            Quaternion rotation = Quaternion.FromToRotation(Vector3.up, up);
+            if (_model != null)
+                PlaceModel(shoulder, wrist, armDir, length);
 
-            // Unity Cylinder default: height = 2 units (Y: -1 to +1), radius = 0.5 units.
-            //   scale.y = length / 2   → makes cylinder exactly arm-length tall
-            //   scale.x = scale.z = thickness  → default radius 0.5 * scale = thickness/2
-            float renderLength, thickness;
-            if (_useFixedSize)
-            {
-                // Fixed-size mode: the cylinder always matches the physical mannequin
-                // arm. Detection noise in bbox / keypoint span cannot stretch it —
-                // only position and orientation come from the detection.
-                renderLength = _fixedLengthMeters;
-                thickness    = _fixedDiameterMeters;
-            }
+            bool useQuad = _model == null || _showDebugQuadAlongsideModel;
+            if (useQuad)
+                PlaceQuad(shoulder, wrist, armDir, length, mid, cameraTransform);
             else
-            {
-                renderLength = length;
-                thickness    = Mathf.Clamp(length * _thicknessRatio, _minThickness, _maxThickness);
-            }
-
-            _mesh.SetPositionAndRotation(mid, rotation);
-            _mesh.localScale = new Vector3(thickness, renderLength * 0.5f, thickness);
-
-            // Apply tiling, offset and opacity every frame so Inspector tweaks take effect live.
-            _material.SetTextureScale ("_BaseMap", _textureTiling);
-            _material.SetTextureOffset("_BaseMap", _textureOffset);
-            _material.SetColor("_BaseColor", new Color(_color.r, _color.g, _color.b, _opacity));
-
-            if (!_mesh.gameObject.activeSelf)
-                Debug.Log($"[ArmOverlay] Cylinder activated — mid={mid} len={renderLength:F2}m thickness={thickness:F3}m" +
-                          (_useFixedSize ? " (fixed size)" : ""));
-
-            _mesh.gameObject.SetActive(true);
+                _quad.gameObject.SetActive(false);
         }
 
         // ── Private helpers ────────────────────────────────────────────────────────────
 
-        private Material CreateOverlayMaterial()
+        private void PlaceModel(Vector3 shoulder, Vector3 wrist, Vector3 armDir, float length)
+        {
+            // Compute the world rotation that takes _modelArmAxis onto armDir.
+            Vector3 axis = _modelArmAxis.sqrMagnitude > 1e-6f
+                ? _modelArmAxis.normalized
+                : Vector3.forward;
+
+            Quaternion rot = Quaternion.FromToRotation(axis, armDir);
+
+            // Pivot offset: move the anchor point along the arm direction.
+            // _pivotOffset=0 → place at shoulder; 0.5 → midpoint; 1 → wrist.
+            Vector3 pos = Vector3.Lerp(shoulder, wrist, _pivotOffset);
+
+            // Uniform scale so the model's length matches the detected arm.
+            Vector3 scale = Vector3.one;
+            if (_scaleToFitDetectedLength && _naturalArmLengthMeters > 0.001f)
+            {
+                float s = length / _naturalArmLengthMeters;
+                scale = new Vector3(s, s, s);
+            }
+
+            if (!_model.gameObject.activeSelf)
+                Debug.Log($"[ArmOverlay] 3D model activated — mid={(shoulder + wrist) * 0.5f} len={length:F2}m");
+
+            _model.SetPositionAndRotation(pos, rot);
+            _model.localScale = scale;
+            _model.gameObject.SetActive(true);
+        }
+
+        private void PlaceQuad(Vector3 shoulder, Vector3 wrist, Vector3 armDir, float length,
+                               Vector3 mid, Transform cameraTransform)
+        {
+            Vector3 camPos  = cameraTransform != null ? cameraTransform.position
+                                                      : Camera.main != null ? Camera.main.transform.position
+                                                      : Vector3.zero;
+            Vector3 toCam   = camPos - mid;
+            Vector3 forward = toCam.sqrMagnitude > 1e-6f ? toCam.normalized : Vector3.forward;
+            Vector3 right   = Vector3.Cross(armDir, forward);
+            if (right.sqrMagnitude < 1e-6f) right = Vector3.right;
+            forward = Vector3.Cross(right.normalized, armDir).normalized;
+
+            float thickness = Mathf.Clamp(length * _thicknessRatio, _minThickness, _maxThickness);
+
+            _quad.SetPositionAndRotation(mid, Quaternion.LookRotation(forward, armDir));
+            _quad.localScale = new Vector3(thickness, length, 1f);
+
+            if (!_quad.gameObject.activeSelf)
+                Debug.Log($"[ArmOverlay] Quad activated — mid={mid} len={length:F2}m");
+
+            _quad.gameObject.SetActive(true);
+        }
+
+        private void SetVisible(bool visible)
+        {
+            if (_model != null) _model.gameObject.SetActive(visible);
+            _quad.gameObject.SetActive(visible);
+        }
+
+        private Material CreateQuadMaterial()
         {
             var shader = Shader.Find("ArmDetection/ArmOverlayUnlit")
                       ?? Shader.Find("Universal Render Pipeline/Unlit")
                       ?? Shader.Find("Unlit/Color");
-
             var mat = new Material(shader);
-
-            if (_overlayTexture != null)
-            {
-                // Texture mode: apply the photo, use _color as a tint (set to white for accurate colours).
-                if (mat.HasProperty("_BaseMap"))  mat.SetTexture("_BaseMap",  _overlayTexture);
-                if (mat.HasProperty("_MainTex"))  mat.SetTexture("_MainTex",  _overlayTexture);
-                if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", _color);
-                if (mat.HasProperty("_Color"))     mat.SetColor("_Color",     _color);
-            }
-            else
-            {
-                // No texture — solid colour fallback (default red, good for debugging).
-                if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", _color);
-                if (mat.HasProperty("_Color"))     mat.SetColor("_Color",     _color);
-            }
-
+            if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", _color);
+            if (mat.HasProperty("_Color"))     mat.SetColor("_Color",     _color);
             return mat;
         }
     }
