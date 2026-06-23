@@ -1,7 +1,6 @@
 ultralytics>=8.3.0
 opencv-python>=4.9
 numpy
-requests
-tqdm
 onnx>=1.15
 onnxslim
+pyyaml

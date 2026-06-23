@@ -6,55 +6,66 @@ using UnityEngine;
 namespace ARArmDetection
 {
     /// <summary>
-    /// Runs a one-class custom arm detector exported from Ultralytics/Roboflow.
-    /// Expected model output is YOLO-style x,y,w,h,confidence for class "arm".
+    /// Runs the arm + needle POSE model (YOLO11n-pose) exported from Ultralytics.
+    /// Two classes, two keypoints each:
+    ///   class 0 = arm    -> kpt0 = proximal (near elbow), kpt1 = distal (wrist)
+    ///   class 1 = needle -> kpt0 = tip (contact point),   kpt1 = hub (back of needle)
+    ///
+    /// Arms are returned as <see cref="PersonDetection"/> (proximal mapped to the
+    /// shoulder keypoint slot, distal to the wrist slot) so the existing
+    /// ArmDetectionManager / overlay pipeline consumes them unchanged. Needles are
+    /// exposed separately via <see cref="LastNeedles"/> for contact detection.
+    ///
+    /// Expected ONNX output (features-first [1, 12, N]):
+    ///   0..3  box cx,cy,w,h   4..5 class scores   6..11 kpts (kx0,ky0,v0, kx1,ky1,v1)
     /// </summary>
     public class CustomArmDetector : MonoBehaviour
     {
         [Header("Model")]
         [SerializeField] private ModelAsset _modelAsset;
         [SerializeField] private BackendType _backend = BackendType.GPUCompute;
-        [SerializeField] private int _inputSize = 640;
+        [SerializeField] private int _inputSize = 320;
 
         [Header("Filtering")]
-        [SerializeField, Range(0f, 1f)] private float _confidenceThreshold = 0.08f;
+        [SerializeField, Range(0f, 1f)] private float _confidenceThreshold = 0.25f;
         [SerializeField, Range(0f, 1f)] private float _nmsIoUThreshold = 0.45f;
         [SerializeField, Range(1, 50)] private int _maxDetections = 5;
-        [Tooltip("Enable only for NMS/exported models that output x1,y1,x2,y2. Keep off for Ultralytics raw output (1,5,8400).")]
-        [SerializeField] private bool _forceXyxyOutput = false;
-        [Tooltip("Generate shoulder/wrist across the box horizontally. Keep enabled for the mannequin arm setup.")]
-        [SerializeField] private bool _forceHorizontalArmKeypoints = true;
+
+        private const int ArmClass = 0;
+        private const int NeedleClass = 1;
 
         private Worker _worker;
         private Tensor<float> _inputTensor;
         private readonly List<PersonDetection> _detections = new();
-        private readonly List<Candidate> _candidates = new();
+        private readonly List<NeedleDetection> _needles = new();
+        private readonly List<PoseCandidate> _candidates = new();
         private string _lastOutputShape = "-";
 
         public bool IsReady => isActiveAndEnabled && _worker != null && _inputTensor != null;
         public bool LastRunConsumedNewResult { get; private set; }
         public bool LastRunScheduledInference { get; private set; }
-        public bool LastRunWasArmOnlyFallback => _detections.Count > 0;
         public float LastArmOnlyMaxScore { get; private set; }
         public float ConfidenceThreshold => _confidenceThreshold;
         public string Status { get; private set; } = "Not started";
 
-        private struct Candidate
+        /// <summary>Needles detected on the most recent run (tip + hub in image space).</summary>
+        public IReadOnlyList<NeedleDetection> LastNeedles => _needles;
+
+        private struct PoseCandidate
         {
+            public int Cls;
             public Rect Bounds;
             public float Score;
+            public Vector2 K0;   // arm: proximal | needle: tip
+            public Vector2 K1;   // arm: distal   | needle: hub
         }
 
-        private void OnEnable()
-        {
-            LoadModel();
-        }
+        private void OnEnable() => LoadModel();
 
         private void OnDisable()
         {
             _worker?.Dispose();
             _worker = null;
-
             _inputTensor?.Dispose();
             _inputTensor = null;
         }
@@ -65,10 +76,11 @@ namespace ARArmDetection
             LastRunScheduledInference = false;
             LastArmOnlyMaxScore = 0f;
             _detections.Clear();
+            _needles.Clear();
 
             if (!IsReady)
             {
-                Status = _modelAsset == null ? "No custom arm model assigned" : "Model not ready";
+                Status = _modelAsset == null ? "No pose model assigned" : "Model not ready";
                 return _detections;
             }
 
@@ -92,12 +104,11 @@ namespace ARArmDetection
                 }
 
                 using var cpuOutput = output.ReadbackAndClone();
-                ParseYoloOutput(cpuOutput, source.width, source.height);
+                ParsePoseOutput(cpuOutput, source.width, source.height);
 
                 LastRunConsumedNewResult = true;
-                Status = _detections.Count > 0
-                    ? $"OK max={LastArmOnlyMaxScore:F3} shape={_lastOutputShape}"
-                    : $"0 arms max={LastArmOnlyMaxScore:F3} conf<{_confidenceThreshold:F2} shape={_lastOutputShape}";
+                Status = $"arms={_detections.Count} needles={_needles.Count} " +
+                         $"max={LastArmOnlyMaxScore:F3} conf>={_confidenceThreshold:F2} shape={_lastOutputShape}";
             }
             catch (Exception ex)
             {
@@ -112,13 +123,12 @@ namespace ARArmDetection
         {
             _worker?.Dispose();
             _worker = null;
-
             _inputTensor?.Dispose();
             _inputTensor = null;
 
             if (_modelAsset == null)
             {
-                Status = "No custom arm model assigned";
+                Status = "No pose model assigned";
                 return;
             }
 
@@ -128,28 +138,29 @@ namespace ARArmDetection
             Status = "Model loaded";
         }
 
-        private void ParseYoloOutput(Tensor<float> output, int imageWidth, int imageHeight)
+        private void ParsePoseOutput(Tensor<float> output, int imageWidth, int imageHeight)
         {
             _candidates.Clear();
             _detections.Clear();
+            _needles.Clear();
 
             var shape = output.shape;
             _lastOutputShape = shape.ToString();
             var data = output.DownloadToArray();
 
-            int rows;
-            int features;
-            bool featuresFirst;
-
-            if (!TryGetYoloLayout(shape, out rows, out features, out featuresFirst))
+            if (!TryGetYoloLayout(shape, out int rows, out int features, out bool featuresFirst) || features < 12)
             {
-                Status = $"Unsupported output shape {shape}";
+                Status = $"Unsupported pose output shape {shape} (need >=12 features)";
                 return;
             }
 
             for (int i = 0; i < rows; i++)
             {
-                float score = ReadFeature(data, shape, i, 4, featuresFirst);
+                float armScore = ReadFeature(data, shape, i, 4, featuresFirst);
+                float needleScore = ReadFeature(data, shape, i, 5, featuresFirst);
+                int cls = needleScore > armScore ? NeedleClass : ArmClass;
+                float score = Mathf.Max(armScore, needleScore);
+
                 if (score > LastArmOnlyMaxScore) LastArmOnlyMaxScore = score;
                 if (score < _confidenceThreshold) continue;
 
@@ -158,32 +169,42 @@ namespace ARArmDetection
                 float w = ReadFeature(data, shape, i, 2, featuresFirst);
                 float h = ReadFeature(data, shape, i, 3, featuresFirst);
 
-                Rect bounds = LooksLikeXyxy(cx, cy, w, h)
-                    ? XyxyToImageBounds(cx, cy, w, h, imageWidth, imageHeight)
-                    : XywhToImageBounds(cx, cy, w, h, imageWidth, imageHeight);
+                Rect bounds = XywhToImageBounds(cx, cy, w, h, imageWidth, imageHeight);
                 if (bounds.width < 2f || bounds.height < 2f) continue;
 
-                _candidates.Add(new Candidate { Bounds = bounds, Score = score });
+                _candidates.Add(new PoseCandidate
+                {
+                    Cls = cls,
+                    Bounds = bounds,
+                    Score = score,
+                    K0 = ReadKeypoint(data, shape, i, 0, featuresFirst, imageWidth, imageHeight),
+                    K1 = ReadKeypoint(data, shape, i, 1, featuresFirst, imageWidth, imageHeight),
+                });
             }
 
             _candidates.Sort((a, b) => b.Score.CompareTo(a.Score));
 
-            for (int i = 0; i < _candidates.Count && _detections.Count < _maxDetections; i++)
+            // Class-aware NMS, then route arms vs needles to their consumers.
+            var kept = new List<PoseCandidate>();
+            for (int i = 0; i < _candidates.Count && kept.Count < _maxDetections; i++)
             {
-                var candidate = _candidates[i];
+                var c = _candidates[i];
                 bool suppressed = false;
-
-                for (int j = 0; j < _detections.Count; j++)
+                for (int j = 0; j < kept.Count; j++)
                 {
-                    if (IoU(candidate.Bounds, _detections[j].ImageBounds) > _nmsIoUThreshold)
+                    if (kept[j].Cls == c.Cls && IoU(c.Bounds, kept[j].Bounds) > _nmsIoUThreshold)
                     {
                         suppressed = true;
                         break;
                     }
                 }
+                if (suppressed) continue;
+                kept.Add(c);
 
-                if (!suppressed)
-                    _detections.Add(ToPersonDetection(candidate));
+                if (c.Cls == ArmClass)
+                    _detections.Add(ToPersonDetection(c));
+                else
+                    _needles.Add(new NeedleDetection { TipImage = c.K0, HubImage = c.K1, Confidence = c.Score });
             }
         }
 
@@ -197,38 +218,26 @@ namespace ARArmDetection
             {
                 int d1 = shape[1];
                 int d2 = shape[2];
-
-                if (d1 <= 16 && d2 > d1)
+                if (d1 <= 32 && d2 > d1)
                 {
-                    features = d1;
-                    rows = d2;
-                    featuresFirst = true;
-                    return features >= 5;
+                    features = d1; rows = d2; featuresFirst = true;
+                    return features >= 12;
                 }
-
-                features = d2;
-                rows = d1;
-                featuresFirst = false;
-                return features >= 5;
+                features = d2; rows = d1; featuresFirst = false;
+                return features >= 12;
             }
 
             if (shape.rank == 2)
             {
                 int d0 = shape[0];
                 int d1 = shape[1];
-
-                if (d0 <= 16 && d1 > d0)
+                if (d0 <= 32 && d1 > d0)
                 {
-                    features = d0;
-                    rows = d1;
-                    featuresFirst = true;
-                    return features >= 5;
+                    features = d0; rows = d1; featuresFirst = true;
+                    return features >= 12;
                 }
-
-                features = d1;
-                rows = d0;
-                featuresFirst = false;
-                return features >= 5;
+                features = d1; rows = d0; featuresFirst = false;
+                return features >= 12;
             }
 
             return false;
@@ -240,21 +249,25 @@ namespace ARArmDetection
             {
                 int rows = featuresFirst ? shape[2] : shape[1];
                 int features = featuresFirst ? shape[1] : shape[2];
-                return featuresFirst
-                    ? data[feature * rows + row]
-                    : data[row * features + feature];
+                return featuresFirst ? data[feature * rows + row] : data[row * features + feature];
             }
 
             int rows2 = featuresFirst ? shape[1] : shape[0];
             int features2 = featuresFirst ? shape[0] : shape[1];
-            return featuresFirst
-                ? data[feature * rows2 + row]
-                : data[row * features2 + feature];
+            return featuresFirst ? data[feature * rows2 + row] : data[row * features2 + feature];
         }
 
-        private bool LooksLikeXyxy(float x1, float y1, float x2, float y2)
+        private Vector2 ReadKeypoint(float[] data, TensorShape shape, int row, int k,
+                                     bool featuresFirst, int imageWidth, int imageHeight)
         {
-            return _forceXyxyOutput;
+            float kx = ReadFeature(data, shape, row, 6 + k * 3, featuresFirst);
+            float ky = ReadFeature(data, shape, row, 7 + k * 3, featuresFirst);
+            bool normalized = Mathf.Max(Mathf.Abs(kx), Mathf.Abs(ky)) <= 2f;
+            float scaleX = normalized ? imageWidth : imageWidth / (float)_inputSize;
+            float scaleY = normalized ? imageHeight : imageHeight / (float)_inputSize;
+            return new Vector2(
+                Mathf.Clamp(kx * scaleX, 0f, imageWidth),
+                Mathf.Clamp(ky * scaleY, 0f, imageHeight));
         }
 
         private Rect XywhToImageBounds(float cx, float cy, float w, float h, int imageWidth, int imageHeight)
@@ -276,49 +289,25 @@ namespace ARArmDetection
             return new Rect(xMin, yMin, Mathf.Max(0f, xMax - xMin), Mathf.Max(0f, yMax - yMin));
         }
 
-        private Rect XyxyToImageBounds(float x1, float y1, float x2, float y2, int imageWidth, int imageHeight)
-        {
-            bool normalized = Mathf.Max(Mathf.Abs(x1), Mathf.Abs(y1), Mathf.Abs(x2), Mathf.Abs(y2)) <= 2f;
-            float scaleX = normalized ? imageWidth : imageWidth / (float)_inputSize;
-            float scaleY = normalized ? imageHeight : imageHeight / (float)_inputSize;
-
-            float xMin = Mathf.Clamp(Mathf.Min(x1, x2) * scaleX, 0f, imageWidth);
-            float yMin = Mathf.Clamp(Mathf.Min(y1, y2) * scaleY, 0f, imageHeight);
-            float xMax = Mathf.Clamp(Mathf.Max(x1, x2) * scaleX, 0f, imageWidth);
-            float yMax = Mathf.Clamp(Mathf.Max(y1, y2) * scaleY, 0f, imageHeight);
-
-            return new Rect(xMin, yMin, Mathf.Max(0f, xMax - xMin), Mathf.Max(0f, yMax - yMin));
-        }
-
-        private PersonDetection ToPersonDetection(Candidate candidate)
+        /// <summary>
+        /// Maps an arm pose candidate to the COCO-slot PersonDetection the manager
+        /// expects: proximal -&gt; shoulder, distal -&gt; wrist, midpoint -&gt; elbow.
+        /// Both Left and Right slots are filled so the manager's side scan finds it.
+        /// </summary>
+        private PersonDetection ToPersonDetection(PoseCandidate c)
         {
             var keypoints = new Keypoint[17];
-            Rect b = candidate.Bounds;
+            Vector2 proximal = c.K0;
+            Vector2 distal = c.K1;
+            Vector2 elbow = (proximal + distal) * 0.5f;
 
-            Vector2 shoulder;
-            Vector2 elbow;
-            Vector2 wrist;
-
-            if (_forceHorizontalArmKeypoints || b.width >= b.height)
-            {
-                shoulder = new Vector2(b.xMin, b.center.y);
-                elbow = b.center;
-                wrist = new Vector2(b.xMax, b.center.y);
-            }
-            else
-            {
-                shoulder = new Vector2(b.center.x, b.yMin);
-                elbow = b.center;
-                wrist = new Vector2(b.center.x, b.yMax);
-            }
-
-            FillArmKeypoints(keypoints, Side.Left, shoulder, elbow, wrist, candidate.Score);
-            FillArmKeypoints(keypoints, Side.Right, shoulder, elbow, wrist, candidate.Score);
+            FillArmKeypoints(keypoints, Side.Left, proximal, elbow, distal, c.Score);
+            FillArmKeypoints(keypoints, Side.Right, proximal, elbow, distal, c.Score);
 
             return new PersonDetection
             {
-                ImageBounds = b,
-                Confidence = candidate.Score,
+                ImageBounds = c.Bounds,
+                Confidence = c.Score,
                 Keypoints = keypoints,
             };
         }

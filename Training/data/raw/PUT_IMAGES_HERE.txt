@@ -1,0 +1,2 @@
+Drop images to label here (.jpg / .png).
+Then run: python scripts/01_label.py

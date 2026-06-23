@@ -1,77 +1,63 @@
-"""Fine-tunes YOLO11n-pose on the mixed mannequin + COCO dataset.
-
-Starts from the pretrained COCO weights (downloaded automatically by
-ultralytics) so human detection is preserved, and trains at 320x320 — the
-input size the Quest 3 runs at.
-
-Run:  python 03_train.py
-      python 03_train.py --epochs 120 --batch 8
-      python 03_train.py --resume            (continue an interrupted run)
-
-A CUDA GPU makes this take ~30-60 min; on CPU expect many hours (consider
-Google Colab: upload the Training/ folder, pip install -r requirements.txt,
-run the same scripts).
-
-Results land in Training/runs/arm_pose/ — check results.png and
-val_batch*_pred.jpg to confirm keypoints land on the arm before exporting.
 """
+Step 3 - Train / fine-tune the YOLO11n-pose model (arm + needle, 2 keypoints each).
 
+Fine-tunes from yolo11n-pose.pt by default. Outputs land in
+Training/runs/arm_needle_pose/weights/best.pt.
+
+    python scripts/03_train.py
+    python scripts/03_train.py --epochs 120 --imgsz 320 --batch 16
+    python scripts/03_train.py --model /path/to/previous_best.pt   # continue from your own weights
+"""
 import argparse
+import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]          # Training/
-DATA_YAML = ROOT / "dataset" / "yolo" / "data.yaml"
+from ultralytics import YOLO
+
+HERE = Path(__file__).resolve().parent       # Training/scripts
+ROOT = HERE.parents[1]                        # repo root (.../NTFH_AR_Prototype)
+DATA_YAML = HERE.parent / "data" / "pose" / "data.yaml"
+RUNS_DIR = HERE.parent / "runs"
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default=str(DATA_YAML))
-    ap.add_argument("--epochs", type=int, default=80)
-    ap.add_argument("--imgsz", type=int, default=320,
-                    help="training image size — keep equal to the Unity _inputSize")
+    ap.add_argument("--model", default="yolo11n-pose.pt",
+                    help="base weights (yolo11n-pose.pt) or a previous best.pt to continue from")
+    ap.add_argument("--epochs", type=int, default=120)
+    ap.add_argument("--imgsz", type=int, default=320, help="match the Quest input size")
     ap.add_argument("--batch", type=int, default=16)
-    ap.add_argument("--device", default=None,
-                    help="e.g. 0 for first GPU, 'cpu' to force CPU (default: auto)")
-    ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--device", default=None, help="e.g. 0 for GPU, cpu for CPU")
+    ap.add_argument("--name", default="arm_needle_pose")
     args = ap.parse_args()
 
-    if not Path(args.data).exists():
-        raise SystemExit(f"{args.data} not found — run 02_prepare_dataset.py first.")
+    if not DATA_YAML.exists():
+        raise SystemExit(f"{DATA_YAML} missing - run scripts/02_prepare_dataset.py first.")
 
-    from ultralytics import YOLO
-
-    if args.resume:
-        last = ROOT / "runs" / "arm_pose" / "weights" / "last.pt"
-        model = YOLO(str(last))
-        model.train(resume=True)
-        return
-
-    model = YOLO("yolo11n-pose.pt")  # pretrained COCO weights, auto-downloaded
+    model = YOLO(args.model)
     model.train(
-        data=args.data,
+        data=str(DATA_YAML),
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch=args.batch,
         device=args.device,
         patience=25,
         cos_lr=True,
-        # Mild augmentation; mosaic off for the last epochs so the model sees
-        # realistic full frames before convergence.
         close_mosaic=10,
-        degrees=10.0,        # the arm can sit at any angle on the table
+        degrees=10.0,
         translate=0.1,
         scale=0.5,
-        fliplr=0.5,          # safe: flip_idx in data.yaml swaps L/R keypoints
-        project=str(ROOT / "runs"),
-        name="arm_pose",
+        fliplr=0.5,
+        project=str(RUNS_DIR),
+        name=args.name,
         exist_ok=True,
     )
 
-    best = ROOT / "runs" / "arm_pose" / "weights" / "best.pt"
-    print(f"\nTraining complete. Best weights: {best}")
-    print("Inspect runs/arm_pose/results.png and val_batch*_pred.jpg, "
-          "then run 04_export_onnx.py")
+    best = RUNS_DIR / args.name / "weights" / "best.pt"
+    print(f"\nDone. Best weights: {best}")
+    print(f"Next:  python scripts/04_export.py --weights {best}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

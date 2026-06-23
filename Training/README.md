@@ -1,111 +1,93 @@
-# Mannequin-Arm Fine-Tuning Kit
+# Arm + Needle Pose — Training Kit
 
-Fine-tunes **YOLO11n-pose** to reliably detect the Limbs & Things venipuncture
-arm, while mixing in COCO human images so the model **keeps detecting real
-human arms** for the future patient phase. The exported ONNX is drop-in
-compatible with the existing Unity `YoloPoseDetector` — same COCO 17-keypoint
-schema, same output layout.
+Trains the **one and only** model the AR prototype uses: a single **YOLO11n-pose**
+model that detects an **arm** and a **needle**, each with **2 keypoints**:
 
-## One-time setup
+| Class | kpt0 | kpt1 | Used for |
+|-------|------|------|----------|
+| `0` arm | proximal (near elbow) | distal (wrist) | forearm axis → AR overlay + arm-surface cylinder |
+| `1` needle | tip (contact point) | hub (back of needle) | insertion point + needle angle |
 
-```powershell
+This is what lets the app answer **"where does the needle contact the arm?"** — the
+needle-tip keypoint, measured against the arm-surface cylinder built from the arm's
+two keypoints.
+
+> **Why 2 keypoints each?** YOLO-pose locks every instance to the same keypoint
+> count, so 2-each fits cleanly in a single model. One model, one inference pass.
+
+## Setup (once)
+
+```bash
 cd Training
-python -m venv .venv
-.venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-Python 3.9+ required. A CUDA GPU makes training take ~30–60 min; on CPU it's
-many hours (alternative: upload this `Training/` folder to Google Colab and run
-the same scripts there).
+## The pipeline
 
-## Step 0 — Capture photos (on the headset)
+Run all steps from `Training/`:
 
-1. In Unity, add the **TrainingFrameCapture** component (in
-   `Assets/Scripts/ArmDetection/`) to the `ArmDetectionPrototype` GameObject
-   and drag the `PassthroughCameraSource` into its camera field.
-2. Build to the Quest 3. It saves a frame every second (max 600).
-3. Slowly walk around the mannequin arm for ~5–8 minutes. Vary:
-   - **angle** (all sides, above, oblique), **distance** (0.3–1.5 m),
-   - **lighting** (lights on/off, blinds open/closed),
-   - **background** (different tables/covers if possible),
-   - include some frames with **your hands near the arm**, and ~10–15% frames
-     **without the arm at all** (label these as background later — they teach
-     the model not to hallucinate).
-4. Pull the photos to the PC:
+| Step | Command | What it does |
+|------|---------|--------------|
+| 0 | drop images into `data/raw/` | Headset captures or phone photos of the arm, the needle, or both. |
+| 1 | `python scripts/01_label.py` | Interactive keypoint labeler. Press `a`, click **proximal** then **distal** to add an arm; press `n`, click **tip** then **hub** to add a needle. `SPACE` saves + next, `x` saves a background frame, `q` quits. Resumable. Writes `data/labels/*.txt` + previews in `data/preview/`. |
+| 2 | `python scripts/02_prepare_dataset.py` | Splits labeled images into train/val and writes `data/pose/data.yaml` (`kpt_shape: [2,3]`, classes `arm,needle`). |
+| 3 | `python scripts/03_train.py` | Fine-tunes `yolo11n-pose.pt`. Outputs `runs/arm_needle_pose/weights/best.pt`. Use `--model <prev_best.pt>` to continue from your own weights. |
+| 4 | `python scripts/04_export.py --weights runs/arm_needle_pose/weights/best.pt` | Exports ONNX (opset 12, 320×320) → `Assets/Models/arm-needle-pose-320.onnx`. |
 
-```powershell
-adb pull /sdcard/Android/data/<your.package.name>/files/ArmCaptures Training/dataset/raw
+### Labeling tips
+- Images don't need both classes in frame. An arm-only photo gets just an arm;
+  a needle-only photo gets just a needle. The model learns each from whichever
+  images contain it.
+- Add a few **background** frames (`x`, no objects) so the model doesn't
+  hallucinate.
+- Aim for **300–500 images**, varied angle/distance/lighting. Headset captures
+  (via the `TrainingFrameCapture` component) match the deployment camera best.
+- The needle tip is small — label it precisely; that point *is* the contact
+  estimate.
+
+## ONNX output layout (what Unity parses)
+
+`CustomArmDetector.cs` expects features-first `[1, 12, N]`:
+
+```
+0..3   box  cx, cy, w, h        (input-pixel scale, 320×320)
+4..5   class scores             (0 = arm, 1 = needle)
+6..11  keypoints                (kx0, ky0, v0, kx1, ky1, v1)
+       arm:    kpt0 = proximal, kpt1 = distal
+       needle: kpt0 = tip,      kpt1 = hub
 ```
 
-(Find the package name under Edit ▸ Project Settings ▸ Player ▸ Identification.)
+## Deploying to Unity
 
-Aim for **300–500 images**. Phone photos work in a pinch, but headset captures
-match the deployment camera and train a better model.
+1. Run step 4 to produce `Assets/Models/arm-needle-pose-320.onnx`.
+2. In `ArmDetectionScene`, select the object with **CustomArmDetector** and assign
+   the new ONNX to its **Model Asset** slot. Set **Input Size = 320**.
+3. Delete the old `Assets/Models/custom-arm-detector.onnx` once the new model is
+   assigned (it's the previous box-only model; kept only so the slot isn't broken
+   before you swap).
 
-## Step 1 — Label (≈20–30 min for 400 images)
-
-```powershell
-python scripts\01_label_arm.py
-```
-
-Click **shoulder → elbow → wrist** (3 clicks), press **SPACE**. Press **x** on
-arm-free frames to save them as background negatives. **f** flips arm side
-(default RIGHT, matching the Limbs & Things right arm). Progress is saved per
-image; quit and resume anytime. Spot-check `dataset/preview/` afterwards.
-
-## Step 2 — Build the dataset
-
-```powershell
-python scripts\02_prepare_dataset.py
-```
-
-First run downloads COCO val2017 (~1 GB total) into `dataset/coco_cache/` and
-mixes ~1500 real-human images with your labeled mannequin images (mannequin
-oversampled 3× to balance). Use `--no-coco` only if you never need human
-detection from this model.
-
-## Step 3 — Train
-
-```powershell
-python scripts\03_train.py
-```
-
-Defaults: 80 epochs, 320×320 (matches the Quest input size), early stopping.
-When done, open `runs/arm_pose/results.png` and the `val_batch*_pred.jpg`
-images — keypoints should sit on the mannequin arm's shoulder/elbow/wrist.
-
-## Step 4 — Export to Unity
-
-```powershell
-python scripts\04_export_onnx.py
-```
-
-This exports ONNX (opset 12, static 320 shapes) and copies it to
-`Assets/Models/arm-pose-320.onnx`. Then in Unity:
-
-1. Select the **YoloPoseDetector** GameObject in `ArmDetectionScene`.
-2. Assign `arm-pose-320.onnx` to **Model Asset**.
-3. Set **Input Size** to `320`.
-4. On-device, the mannequin arm should now fire in **NORMAL mode** with high
-   confidence — try raising **Confidence Threshold** to ~0.4 and see if you
-   can stop relying on the arm-only fallback entirely.
+`CustomArmDetector` feeds arm keypoints into the existing overlay/world-tracking
+pipeline (proximal→shoulder slot, distal→wrist slot) and exposes detected needles
+via `LastNeedles`. `ArmDetectionManager.TryGetNeedle(...)` projects the tip+hub to
+world space, and `InjectionSiteDetector` uses that tip to fire the injection-site
+events (falling back to the OVR fingertip only if no needle is detected).
 
 ## Folder map
 
 ```
 Training/
   requirements.txt
-  dataset/
-    raw/          ← DROP PHOTOS HERE
-    raw_labels/   (written by step 1)
-    preview/      (label visualisations — spot-check these)
-    coco_cache/   (auto-downloaded COCO subset, ~2 GB; safe to delete after)
-    yolo/         (generated train/val dataset)
   scripts/
-    01_label_arm.py
-    02_prepare_dataset.py
-    03_train.py
-    04_export_onnx.py
-  runs/           (training outputs, best.pt lives here)
+    01_label.py             (interactive keypoint labeler)
+    02_prepare_dataset.py   (train/val split + pose data.yaml)
+    03_train.py             (fine-tune yolo11n-pose)
+    04_export.py            (export ONNX → Assets/Models/)
+  data/
+    raw/        <-- DROP IMAGES HERE
+    labels/     (pose .txt written by step 1)
+    preview/    (label visualisations — spot-check these)
+    pose/       (generated train/val split + data.yaml)
+  runs/         (training outputs; best.pt)
 ```

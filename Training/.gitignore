@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+
+# Heavy / generated training artifacts — keep folder structure, not contents
+data/raw/*
+!data/raw/PUT_IMAGES_HERE.txt
+data/pose/
+data/preview/
+runs/
+*.pt
+*.onnx

@@ -1,19 +1,24 @@
-Drop yolo11n-pose.onnx in this folder.
+This folder holds the one model used by the app: the arm + needle POSE model,
+arm-needle-pose-320.onnx (produced by the Training/ pipeline).
 
-How to get the model:
+How it's produced (see Training/README.md for the full pipeline):
 
-  pip install ultralytics
-  python -c "from ultralytics import YOLO; YOLO('yolo11n-pose.pt').export(format='onnx', opset=15, imgsz=640, dynamic=False, simplify=True)"
+  cd Training
+  python scripts/01_label.py            # label arm + needle keypoints
+  python scripts/02_prepare_dataset.py
+  python scripts/03_train.py
+  python scripts/04_export.py --weights runs/arm_needle_pose/weights/best.pt
 
-This produces yolo11n-pose.onnx (~6 MB).
+Unity imports it as a Sentis ModelAsset. Assign it to the "Model Asset" slot on
+the CustomArmDetector component (ArmDetectionScene) and set Input Size = 320.
 
-Unity will import it as a Sentis ModelAsset.
-Drag it into the "Model Asset" slot on the YoloPoseDetector component.
+Output layout, features-first [1, 12, N]:
+  0..3   box cx, cy, w, h        (input-pixel scale, 320x320)
+  4..5   class scores            (0 = arm, 1 = needle)
+  6..11  keypoints               (kx0, ky0, v0, kx1, ky1, v1)
+         arm:    kpt0 = proximal, kpt1 = distal
+         needle: kpt0 = tip,      kpt1 = hub
 
-Output shape expected: (1, 56, 8400)
-  channels 0..3   = bbox cx, cy, w, h (pixels, 640x640 input)
-  channel 4       = person confidence (0..1)
-  channels 5..55  = 17 keypoints x (x, y, visibility)
-
-If your export differs (e.g. transposed to [1, 8400, 56]), re-export with the
-command above, or transpose in your model wrapper before passing to the detector.
+custom-arm-detector.onnx is the PREVIOUS box-only model. It is kept only so the
+scene's Model Asset slot isn't broken before you swap in the pose model. Delete
+it once arm-needle-pose-320.onnx is assigned.

@@ -109,3 +109,11 @@ InitTestScene*.unity*
 # YOLO Model
 /[Aa]ssets/YOLOModel/*.onnx
 /[Aa]ssets/YOLOModel/*.onnx.meta
+
+# ── Large non-essential files ────────────────────────────────────────────────
+# Unity IL2CPP build backup ("...BackUpThisFolder_ButDontShipItWithYourGame")
+*_BackUpThisFolder_ButDontShipItWithYourGame*
+
+# PyTorch weights — regenerable, never loaded by Unity (it uses the .onnx).
+# Base weights (yolo11n*.pt) auto-download; trained checkpoints live in Training/runs/.
+*.pt
