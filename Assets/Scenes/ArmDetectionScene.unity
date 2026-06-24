@@ -2291,6 +2291,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.InjectionSiteDetector
   _armManager: {fileID: 2062675444}
+  _useHandFallback: 1
   _rightHandSkeleton: {fileID: 426222574}
   _armRadiusMeters: 0.0425
   _approachRadiusMeters: 0.07
@@ -2646,14 +2647,14 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7ae13ebf3a440ce4c960e63a8c41ff56, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.CustomArmDetector
-  _modelAsset: {fileID: 5022602860645237092, guid: 8720ce89424dc1141afa3c16998d74e0, type: 3}
+  _modelAsset: {fileID: 5022602860645237092, guid: 79145038f0f6db54e8671729c9908d7e, type: 3}
   _backend: 256
   _inputSize: 640
   _confidenceThreshold: 0.03
   _nmsIoUThreshold: 0.25
   _maxDetections: 5
-  _forceXyxyOutput: 0
-  _forceHorizontalArmKeypoints: 1
+  _armClassId: 1
+  _needleClassId: 0
 --- !u!1 &2026037911
 GameObject:
   m_ObjectHideFlags: 0
@@ -2736,6 +2737,15 @@ MonoBehaviour:
   _armOnlyWorldSmoothing: 0.55
   _armOnlyLockLostFrames: 8
   _customDetectorEveryNFrames: 1
+  _needleWorldSmoothing: 0.5
+  _needleFallbackDepthMeters: 0.5
+  _useDepthAxisEstimation: 1
+  _depthSampleGrid: 6
+  _swapDepthAxisEndpoints: 0
+  _useFixedWorldAxis: 1
+  _fixedArmYawDegrees: 0
+  _fixedArmLengthMeters: 0.55
+  _swapFixedAxisEndpoints: 0
   _debugHUD: {fileID: 1142564977}
   _bypassWearerFilter: 1
 --- !u!4 &2062675445

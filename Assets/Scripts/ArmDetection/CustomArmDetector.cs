@@ -31,8 +31,11 @@ namespace ARArmDetection
         [SerializeField, Range(0f, 1f)] private float _nmsIoUThreshold = 0.45f;
         [SerializeField, Range(1, 50)] private int _maxDetections = 5;
 
-        private const int ArmClass = 0;
-        private const int NeedleClass = 1;
+        [Header("Class mapping (must match the model's training names dict)")]
+        [Tooltip("Class index the pose model uses for the arm. Check the ONNX metadata's 'names' field after export.")]
+        [SerializeField] private int _armClassId = 1;
+        [Tooltip("Class index the pose model uses for the needle/syringe. Check the ONNX metadata's 'names' field after export.")]
+        [SerializeField] private int _needleClassId = 0;
 
         private Worker _worker;
         private Tensor<float> _inputTensor;
@@ -156,9 +159,9 @@ namespace ARArmDetection
 
             for (int i = 0; i < rows; i++)
             {
-                float armScore = ReadFeature(data, shape, i, 4, featuresFirst);
-                float needleScore = ReadFeature(data, shape, i, 5, featuresFirst);
-                int cls = needleScore > armScore ? NeedleClass : ArmClass;
+                float armScore = ReadFeature(data, shape, i, 4 + _armClassId, featuresFirst);
+                float needleScore = ReadFeature(data, shape, i, 4 + _needleClassId, featuresFirst);
+                int cls = needleScore > armScore ? _needleClassId : _armClassId;
                 float score = Mathf.Max(armScore, needleScore);
 
                 if (score > LastArmOnlyMaxScore) LastArmOnlyMaxScore = score;
@@ -201,7 +204,7 @@ namespace ARArmDetection
                 if (suppressed) continue;
                 kept.Add(c);
 
-                if (c.Cls == ArmClass)
+                if (c.Cls == _armClassId)
                     _detections.Add(ToPersonDetection(c));
                 else
                     _needles.Add(new NeedleDetection { TipImage = c.K0, HubImage = c.K1, Confidence = c.Score });

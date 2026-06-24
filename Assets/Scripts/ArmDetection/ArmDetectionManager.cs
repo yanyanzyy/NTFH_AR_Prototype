@@ -42,6 +42,34 @@ namespace ARArmDetection
         [Tooltip("Depth (m) used to project the needle when no arm is locked to borrow depth from.")]
         [SerializeField] private float _needleFallbackDepthMeters = 0.5f;
 
+        [Header("Depth-based arm axis (bypasses keypoint regression)")]
+        [Tooltip("When a depth raycaster is available, estimate the arm's 3D axis by sampling a grid " +
+                 "of points across the detected box and raycasting them against real-world depth, then " +
+                 "running PCA on the resulting point cloud. Use this when the model's keypoint head has " +
+                 "no reliable training signal for the Arm class (box/class only) - it derives orientation " +
+                 "from sensed geometry instead of the (currently untrained) keypoint regression.")]
+        [SerializeField] private bool _useDepthAxisEstimation = true;
+        [Tooltip("Sample grid resolution across the box (grid x grid points raycasted).")]
+        [SerializeField, Range(3, 12)] private int _depthSampleGrid = 6;
+        [Tooltip("Flip which depth-derived axis endpoint is treated as shoulder vs wrist. Toggle once " +
+                 "after visually checking overlay orientation against your fixed mannequin setup.")]
+        [SerializeField] private bool _swapDepthAxisEndpoints = false;
+
+        [Header("Fixed-axis fallback (no depth sensing or trained keypoints needed)")]
+        [Tooltip("When depth-axis estimation can't get hits (e.g. raycasting against a handheld prop " +
+                 "that was never scanned into the room mesh), fall back to a FIXED real-world direction " +
+                 "for the arm axis instead of the untrained keypoints. Works because the mannequin is " +
+                 "stationary between sessions - calibrate once by rotating _fixedArmYawDegrees in the " +
+                 "Inspector at Play time until the overlay points the right way, then leave it.")]
+        [SerializeField] private bool _useFixedWorldAxis = true;
+        [Tooltip("Rotation around the world Y axis (degrees) that the arm points along, assuming it " +
+                 "lies roughly horizontal. 0 = world +Z, 90 = world +X, etc. Calibrate this in Play mode.")]
+        [SerializeField] private float _fixedArmYawDegrees = 0f;
+        [Tooltip("Real length of the mannequin forearm in metres (placed centred on the detected box).")]
+        [SerializeField] private float _fixedArmLengthMeters = 0.55f;
+        [Tooltip("Flip which fixed-axis endpoint is treated as shoulder vs wrist.")]
+        [SerializeField] private bool _swapFixedAxisEndpoints = false;
+
         [Header("Debug")]
         [SerializeField] private ArmDetectionDebugHUD _debugHUD;
         [SerializeField] private bool _bypassWearerFilter = true;
@@ -77,6 +105,10 @@ namespace ARArmDetection
             wrist    = _smoothedWristWorld;
             return IsLocked;
         }
+
+        /// <summary>Explains the last result of TryEstimateArmAxisFromDepth — why it succeeded
+        /// or failed this frame. Surfaced in the debug HUD to diagnose depth-API issues.</summary>
+        public string DepthAxisStatus { get; private set; } = "Not attempted yet";
 
         /// <summary>True when the pose model detected a needle this frame (smoothed world pose valid).</summary>
         public bool HasNeedle => _hasNeedle;
@@ -410,9 +442,26 @@ namespace ARArmDetection
             if (!skipWearerFilter && _wearerFilter != null && _wearerFilter.IsWearerArm(arm, _cameraSource)) return false;
             filterPassCount++;
 
-            Vector3 shoulderWorld = ProjectImagePoint(arm.ShoulderImage, depthHeuristic, out bool _);
-            Vector3 wristWorld = ProjectImagePoint(arm.WristImage, depthHeuristic, out bool wristHit);
-            if (wristHit) depthRaycastHits++;
+            Vector3 shoulderWorld, wristWorld;
+            if (TryEstimateArmAxisFromDepth(p.ImageBounds, out var axisEndA, out var axisEndB))
+            {
+                shoulderWorld = axisEndA;
+                wristWorld = axisEndB;
+                depthRaycastHits++;
+            }
+            else if (_useFixedWorldAxis)
+            {
+                Vector3 centerWorld = ProjectImagePoint(p.ImageBounds.center, depthHeuristic, out bool centerHit);
+                if (centerHit) depthRaycastHits++;
+                GetFixedAxisEndpoints(centerWorld, out shoulderWorld, out wristWorld);
+                DepthAxisStatus = $"Fixed-axis fallback - yaw={_fixedArmYawDegrees:F0} deg, length={_fixedArmLengthMeters:F2} m";
+            }
+            else
+            {
+                shoulderWorld = ProjectImagePoint(arm.ShoulderImage, depthHeuristic, out bool _);
+                wristWorld = ProjectImagePoint(arm.WristImage, depthHeuristic, out bool wristHit);
+                if (wristHit) depthRaycastHits++;
+            }
 
             float effectiveDepth = Vector3.Distance(_cameraSource.CameraPose.position, wristWorld);
             float score = arm.Confidence - effectiveDepth * 0.015f;
@@ -551,6 +600,143 @@ namespace ARArmDetection
             _hasStableArmImage = false;
             _hasSmoothedArmWorld = false;
             _stableArmLostFrames = 0;
+        }
+
+        /// <summary>
+        /// Estimates the arm's 3D axis directly from sensed depth, bypassing the model's
+        /// keypoint regression entirely. Samples a grid of points inside <paramref name="imageBounds"/>,
+        /// raycasts each against real-world depth via the Depth API, and runs PCA on the
+        /// resulting point cloud to find the dominant (long) axis. Returns the two extreme
+        /// points along that axis as the arm's endpoints.
+        ///
+        /// Use this when the bounding box is reliable but the keypoint head has no real
+        /// training signal (e.g. only box/class supervision exists for a class) - orientation
+        /// comes from sensed geometry instead of an untrained regression output.
+        /// </summary>
+        private bool TryEstimateArmAxisFromDepth(Rect imageBounds, out Vector3 endA, out Vector3 endB)
+        {
+            endA = endB = default;
+
+            if (!_useDepthAxisEstimation)
+            {
+                DepthAxisStatus = "Disabled (_useDepthAxisEstimation = false)";
+                return false;
+            }
+            if (_depthRaycaster == null)
+            {
+                DepthAxisStatus = "No EnvironmentRaycastManager assigned to _depthRaycaster";
+                return false;
+            }
+            if (!EnvironmentRaycastManager.IsSupported)
+            {
+                DepthAxisStatus = "EnvironmentRaycastManager.IsSupported = false " +
+                                   "(device/OS doesn't support Depth API, or Spatial Data permission not granted)";
+                return false;
+            }
+
+            int grid = _depthSampleGrid;
+            // Shrink sampling inward from the box edges so background pixels (where the box
+            // slightly overshoots the real arm silhouette) don't get raycasted.
+            float padX = imageBounds.width * 0.1f;
+            float padY = imageBounds.height * 0.1f;
+
+            var hits = new List<Vector3>(grid * grid);
+            for (int gx = 0; gx < grid; gx++)
+            {
+                float u = grid > 1 ? gx / (float)(grid - 1) : 0.5f;
+                float px = Mathf.Lerp(imageBounds.xMin + padX, imageBounds.xMax - padX, u);
+
+                for (int gy = 0; gy < grid; gy++)
+                {
+                    float v = grid > 1 ? gy / (float)(grid - 1) : 0.5f;
+                    float py = Mathf.Lerp(imageBounds.yMin + padY, imageBounds.yMax - padY, v);
+
+                    var ray = _cameraSource.ImagePointToRay(new Vector2(px, py));
+                    if (_depthRaycaster.Raycast(ray, out var hit, _maxDepthMeters))
+                        hits.Add(hit.point);
+                }
+            }
+
+            if (hits.Count < 6)
+            {
+                DepthAxisStatus = $"Only {hits.Count}/{grid * grid} depth samples hit this frame (<6 needed)";
+                return false;
+            }
+
+            // Outlier rejection: keep points near the median depth so any background pixels
+            // that slipped through don't skew the axis away from the true arm surface.
+            Vector3 camPos = _cameraSource.CameraPose.position;
+            var depths = new List<float>(hits.Count);
+            foreach (var h in hits) depths.Add(Vector3.Distance(camPos, h));
+            depths.Sort();
+            float medianDepth = depths[depths.Count / 2];
+
+            var filtered = new List<Vector3>(hits.Count);
+            foreach (var h in hits)
+                if (Mathf.Abs(Vector3.Distance(camPos, h) - medianDepth) < 0.15f)
+                    filtered.Add(h);
+            if (filtered.Count < 5) filtered = hits;
+
+            Vector3 centroid = Vector3.zero;
+            foreach (var p in filtered) centroid += p;
+            centroid /= filtered.Count;
+
+            float xx = 0f, xy = 0f, xz = 0f, yy = 0f, yz = 0f, zz = 0f;
+            foreach (var p in filtered)
+            {
+                Vector3 d = p - centroid;
+                xx += d.x * d.x; xy += d.x * d.y; xz += d.x * d.z;
+                yy += d.y * d.y; yz += d.y * d.z; zz += d.z * d.z;
+            }
+
+            Vector3 axis = DominantEigenvector(xx, xy, xz, yy, yz, zz);
+
+            float minProj = float.MaxValue, maxProj = float.MinValue;
+            Vector3 minPt = centroid, maxPt = centroid;
+            foreach (var p in filtered)
+            {
+                float proj = Vector3.Dot(p - centroid, axis);
+                if (proj < minProj) { minProj = proj; minPt = p; }
+                if (proj > maxProj) { maxProj = proj; maxPt = p; }
+            }
+
+            endA = _swapDepthAxisEndpoints ? maxPt : minPt;
+            endB = _swapDepthAxisEndpoints ? minPt : maxPt;
+            DepthAxisStatus = $"OK - {filtered.Count}/{hits.Count} samples, axis length {Vector3.Distance(endA, endB):F2} m";
+            return true;
+        }
+
+        /// <summary>
+        /// Places the two arm endpoints around <paramref name="centerWorld"/> using a fixed,
+        /// manually-calibrated real-world direction instead of sensed depth or trained
+        /// keypoints. Valid because the mannequin is a stationary prop - calibrate
+        /// _fixedArmYawDegrees once in Play mode and it stays correct across sessions.
+        /// </summary>
+        private void GetFixedAxisEndpoints(Vector3 centerWorld, out Vector3 endA, out Vector3 endB)
+        {
+            Vector3 dir = Quaternion.Euler(0f, _fixedArmYawDegrees, 0f) * Vector3.forward;
+            Vector3 half = dir.normalized * (_fixedArmLengthMeters * 0.5f);
+            Vector3 a = centerWorld - half;
+            Vector3 b = centerWorld + half;
+            endA = _swapFixedAxisEndpoints ? b : a;
+            endB = _swapFixedAxisEndpoints ? a : b;
+        }
+
+        /// <summary>Dominant eigenvector of a 3x3 symmetric matrix via power iteration (a few
+        /// iterations are enough since only the principal axis direction is needed).</summary>
+        private static Vector3 DominantEigenvector(float xx, float xy, float xz, float yy, float yz, float zz)
+        {
+            Vector3 v = new Vector3(1f, 1f, 1f).normalized;
+            for (int i = 0; i < 12; i++)
+            {
+                Vector3 mv = new Vector3(
+                    xx * v.x + xy * v.y + xz * v.z,
+                    xy * v.x + yy * v.y + yz * v.z,
+                    xz * v.x + yz * v.y + zz * v.z);
+                if (mv.sqrMagnitude < 1e-9f) break;
+                v = mv.normalized;
+            }
+            return v;
         }
 
         private Vector3 ProjectImagePoint(Vector2 imagePoint, float fallbackDepth, out bool usedRaycast)
