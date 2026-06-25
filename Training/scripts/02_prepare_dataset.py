@@ -73,14 +73,14 @@ def main():
         "path": str(POSE.resolve()),
         "train": "images/train",
         "val": "images/val",
-        "kpt_shape": [2, 3],   # 2 keypoints, each (x, y, visibility)
-        "flip_idx": [0, 1],    # proximal/distal and tip/hub are not L/R pairs -> identity
+        "kpt_shape": [4, 3],         # 4 keypoints, each (x, y, visibility)
+        "flip_idx": [0, 1, 2, 3],    # collinear points, no L/R pairs -> identity
         "names": {i: n for i, n in enumerate(CLASSES)},
     }
     (POSE / "data.yaml").write_text(yaml.safe_dump(data_yaml, sort_keys=False))
 
     print(f"Wrote {POSE / 'data.yaml'}")
-    print(f"  train={len(train)}  val={len(val)}  classes={CLASSES}  kpt_shape=[2,3]")
+    print(f"  train={len(train)}  val={len(val)}  classes={CLASSES}  kpt_shape={data_yaml['kpt_shape']}")
     print("Next: python scripts/03_train.py")
     return 0
 

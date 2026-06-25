@@ -5,8 +5,11 @@ __pycache__/
 # Heavy / generated training artifacts — keep folder structure, not contents
 data/raw/*
 !data/raw/PUT_IMAGES_HERE.txt
+data/labels/
 data/pose/
 data/preview/
+data/needle/
+data/arm-pose-converted/
 runs/
 *.pt
 *.onnx

@@ -6,12 +6,15 @@ Step 4 - Export trained pose weights to ONNX for Unity (Sentis).
 Exports a static-shape ONNX (opset 12, 320x320) and copies it into
 Assets/Models/ for the CustomArmDetector component to load.
 
-Output channel layout (per anchor), features-first [1, 12, N]:
-    0..3   box cx, cy, w, h        (input-pixel scale, 320x320)
-    4..5   class scores            (0 = arm, 1 = needle)
-    6..11  keypoints               (kx0, ky0, v0, kx1, ky1, v1)
-           arm:    kpt0 = proximal, kpt1 = distal
-           needle: kpt0 = tip,     kpt1 = hub
+Output channel layout (per anchor), features-first [1, 18, N] (4 kpts, 2 classes):
+    0..3    box cx, cy, w, h       (input-pixel scale, 320x320)
+    4..5    class scores           (0 = arm, 1 = needle)
+    6..17   keypoints              (kx0,ky0,v0, ... kx3,ky3,v3)
+            needle: kpt0 = tip, kpt3 = hub/plunger (kpt1-2 mid-barrel)
+            arm:    placeholder (v ~ 0; box-only until arm keypoints are labeled)
+
+NOTE: CustomArmDetector.cs still parses the old [1, 12, N] (2-kpt) layout; it must
+be updated to [1, 18, N] before this ONNX will work in Unity.
 """
 import argparse
 import shutil
