@@ -2057,7 +2057,7 @@ MonoBehaviour:
   _armModelPrefab: {fileID: -8098169881513260187, guid: c6f3c4bfaeb24194e93917b3df9f63bd, type: 3}
   _modelArmAxis: {x: 0, y: 0, z: 1}
   _naturalArmLengthMeters: 0.65
-  _scaleToFitDetectedLength: 1
+  _scaleToFitDetectedLength: 0
   _pivotOffset: 0.5
   _color: {r: 1, g: 0, b: 0, a: 1}
   _thicknessRatio: 0.22
@@ -2647,7 +2647,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7ae13ebf3a440ce4c960e63a8c41ff56, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.CustomArmDetector
-  _modelAsset: {fileID: 5022602860645237092, guid: 79145038f0f6db54e8671729c9908d7e, type: 3}
+  _modelAsset: {fileID: 5022602860645237092, guid: 63d0c4c19806b7642942e7b57ad84d36, type: 3}
   _backend: 256
   _inputSize: 640
   _confidenceThreshold: 0.03
@@ -2733,18 +2733,20 @@ MonoBehaviour:
   _keypointConfidence: 0.01
   _skipWearerFilterInArmOnlyMode: 1
   _armOnlyStabilityRadiusPixels: 420
-  _armOnlyImageSmoothing: 0.65
-  _armOnlyWorldSmoothing: 0.55
-  _armOnlyLockLostFrames: 8
-  _customDetectorEveryNFrames: 1
+  _armOnlyImageSmoothing: 0.8
+  _armOnlyWorldSmoothing: 0.9
+  _armOnlyLockLostFrames: 45
+  _customDetectorEveryNFrames: 2
   _needleWorldSmoothing: 0.5
   _needleFallbackDepthMeters: 0.5
-  _useDepthAxisEstimation: 1
+  _useDepthAxisEstimation: 0
   _depthSampleGrid: 6
   _swapDepthAxisEndpoints: 0
   _useFixedWorldAxis: 1
   _fixedArmYawDegrees: 0
   _fixedArmLengthMeters: 0.55
+  _stabilizeFixedAxisDepth: 1
+  _fixedAxisDepthSmoothing: 0.97
   _swapFixedAxisEndpoints: 0
   _debugHUD: {fileID: 1142564977}
   _bypassWearerFilter: 1

@@ -12,8 +12,10 @@ namespace ARArmDetection
         [SerializeField] private ArmDetectionManager _manager;
         [Tooltip("How far in front of the camera the panel floats.")]
         [SerializeField] private float _distanceMeters = 1.4f;
-        [Tooltip("How many metres above the camera origin the panel sits.")]
-        [SerializeField] private float _heightAboveCamera = 1.0f;
+        [Tooltip("How high in the user's view the panel sits.")]
+        [SerializeField] private float _heightInViewMeters = 0.55f;
+        [Tooltip("How far to the right of the user's view the grouped panels sit.")]
+        [SerializeField] private float _rightInViewMeters = 0.48f;
 
         private Image _background;
         private Text _label;
@@ -45,19 +47,15 @@ namespace ARArmDetection
             var cam = Camera.main;
             if (cam == null) return;
 
-            Vector3 flatForward = cam.transform.forward;
-            flatForward.y = 0f;
-            if (flatForward.sqrMagnitude < 0.001f) flatForward = Vector3.forward;
-            flatForward.Normalize();
-
             Vector3 target = cam.transform.position
-                + flatForward * _distanceMeters
-                + Vector3.up * _heightAboveCamera;
+                + cam.transform.forward * _distanceMeters
+                + cam.transform.up * _heightInViewMeters
+                + cam.transform.right * _rightInViewMeters;
             transform.position = target;
 
             Vector3 toCamera = cam.transform.position - target;
             if (toCamera.sqrMagnitude > 0.001f)
-                transform.rotation = Quaternion.LookRotation(-toCamera.normalized, Vector3.up);
+                transform.rotation = Quaternion.LookRotation(-toCamera.normalized, cam.transform.up);
         }
 
         private void BuildUI()

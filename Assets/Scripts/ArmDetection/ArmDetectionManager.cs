@@ -67,6 +67,10 @@ namespace ARArmDetection
         [SerializeField] private float _fixedArmYawDegrees = 0f;
         [Tooltip("Real length of the mannequin forearm in metres (placed centred on the detected box).")]
         [SerializeField] private float _fixedArmLengthMeters = 0.55f;
+        [Tooltip("Keep the fixed-axis overlay at a stable depth so small box-size jitter doesn't make it zoom.")]
+        [SerializeField] private bool _stabilizeFixedAxisDepth = true;
+        [Tooltip("How strongly to smooth fixed-axis depth (0 = raw depth, 1 = frozen).")]
+        [SerializeField, Range(0f, 1f)] private float _fixedAxisDepthSmoothing = 0.97f;
         [Tooltip("Flip which fixed-axis endpoint is treated as shoulder vs wrist.")]
         [SerializeField] private bool _swapFixedAxisEndpoints = false;
 
@@ -154,6 +158,8 @@ namespace ARArmDetection
         private bool _hadNeedlePrev;
         private Vector3 _needleTipWorld;
         private Vector3 _needleHubWorld;
+        private bool _hasStableFixedAxisDepth;
+        private float _stableFixedAxisDepth;
 
         private void Reset()
         {
@@ -451,10 +457,13 @@ namespace ARArmDetection
             }
             else if (_useFixedWorldAxis)
             {
-                Vector3 centerWorld = ProjectImagePoint(p.ImageBounds.center, depthHeuristic, out bool centerHit);
-                if (centerHit) depthRaycastHits++;
+                // For a stationary mannequin, a stable heuristic depth is less jittery than
+                // per-frame Depth API raycasts, which can make the overlay appear to zoom.
+                float stableDepth = GetStableFixedAxisDepth(depthHeuristic);
+                Vector3 centerWorld = _cameraSource.ImagePointToWorld(p.ImageBounds.center, stableDepth);
                 GetFixedAxisEndpoints(centerWorld, out shoulderWorld, out wristWorld);
-                DepthAxisStatus = $"Fixed-axis fallback - yaw={_fixedArmYawDegrees:F0} deg, length={_fixedArmLengthMeters:F2} m";
+                DepthAxisStatus = $"Fixed-axis fallback - yaw={_fixedArmYawDegrees:F0} deg, " +
+                                  $"length={_fixedArmLengthMeters:F2} m, depth={stableDepth:F2} m";
             }
             else
             {
@@ -600,6 +609,26 @@ namespace ARArmDetection
             _hasStableArmImage = false;
             _hasSmoothedArmWorld = false;
             _stableArmLostFrames = 0;
+            _hasStableFixedAxisDepth = false;
+        }
+
+        private float GetStableFixedAxisDepth(float rawDepth)
+        {
+            rawDepth = Mathf.Clamp(rawDepth, _minDepthMeters, _maxDepthMeters);
+            if (!_stabilizeFixedAxisDepth) return rawDepth;
+
+            if (!_hasStableFixedAxisDepth)
+            {
+                _stableFixedAxisDepth = rawDepth;
+                _hasStableFixedAxisDepth = true;
+            }
+            else
+            {
+                float t = 1f - _fixedAxisDepthSmoothing;
+                _stableFixedAxisDepth = Mathf.Lerp(_stableFixedAxisDepth, rawDepth, t);
+            }
+
+            return _stableFixedAxisDepth;
         }
 
         /// <summary>

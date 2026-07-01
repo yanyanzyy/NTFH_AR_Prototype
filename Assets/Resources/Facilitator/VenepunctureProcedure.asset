@@ -1,0 +1,118 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 093ce297fc254a53b870538846729eca, type: 3}
+  m_Name: VenepunctureProcedure
+  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.Facilitator.FacilitatorProcedure
+  _procedureTitle: Venepuncture - Vacutainer Method
+  _steps:
+  - _id: '1'
+    _title: Position the patient's arm
+    _instruction: Position the patient's arm lower than heart level and select the appropriate vein on the upper limb.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '2'
+    _title: Face the puncture site upwards
+    _instruction: Ensure the puncture site is facing upwards to ensure vein visibility.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '3'
+    _title: Place the protective sheet
+    _instruction: Place a protective sheet under the identified site.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '4'
+    _title: Perform hand hygiene
+    _instruction: Perform hand hygiene. Don gloves.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.1'
+    _title: Prepare the vacutainer
+    _instruction: Attach the vacutainer needle to the holder.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.2'
+    _title: Apply the tourniquet
+    _instruction: Apply the tourniquet about 4-5 finger widths above the identified site. Instruct the patient to clench the fist gently.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.3'
+    _title: Confirm the vein
+    _instruction: Re-palpate the vein and confirm its location.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.4'
+    _title: Clean the selected site
+    _instruction: Clean the selected site with an alcohol swab in a circular motion. Allow it to air dry for a minimum of 30 seconds.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.5'
+    _title: Stabilize the vein
+    _instruction: Hold the needle with the bevel facing upwards. Stabilize the vein by maintaining traction on the skin with the thumb 2.5-5 cm below the puncture site.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.6'
+    _title: Insert the needle
+    _instruction: Insert the vacutainer needle at an angle of 15-30 degrees.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.7'
+    _title: Advance into the vein
+    _instruction: Lower the needle towards the skin when puncturing the vein is felt. Advance the needle about 3-5 mm into the vein and observe for flashback of blood.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.8'
+    _title: Insert the specimen tube
+    _instruction: Introduce the blood specimen tube into the holder without exerting pressure on the needle.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.9'
+    _title: Release the tourniquet
+    _instruction: Remove the tourniquet when blood starts to flow into the tube. Inform the patient to release the fist.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.10'
+    _title: Complete tube collection
+    _instruction: Disengage the specimen tube from the holder when blood flow stops. If additional samples are required, insert the next tube and repeat the collection process. Collect specimens in the correct order of draw and invert tubes gently as required.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.11'
+    _title: Remove and discard the needle
+    _instruction: Cover the puncture site with gauze. Remove the needle after disengaging the last blood tube. Discard sharps safely.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.12'
+    _title: Apply direct pressure
+    _instruction: Apply digital pressure until no bleeding is observed. Apply direct pressure for 3-5 minutes, or longer for a patient with coagulopathy.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:
+  - _id: '5.13'
+    _title: Inspect and dress the site
+    _instruction: Check the puncture site and apply a plaster when bleeding ceases.
+    _narration: {fileID: 0}
+    _advanceMode: 0
+    _completionSignal:

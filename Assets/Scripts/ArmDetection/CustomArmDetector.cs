@@ -39,6 +39,10 @@ namespace ARArmDetection
 
         private Worker _worker;
         private Tensor<float> _inputTensor;
+        private Tensor<float> _pendingOutput;
+        private bool _readbackPending;
+        private int _pendingImageWidth;
+        private int _pendingImageHeight;
         private readonly List<PersonDetection> _detections = new();
         private readonly List<NeedleDetection> _needles = new();
         private readonly List<PoseCandidate> _candidates = new();
@@ -67,6 +71,8 @@ namespace ARArmDetection
 
         private void OnDisable()
         {
+            _readbackPending = false;
+            _pendingOutput = null;
             _worker?.Dispose();
             _worker = null;
             _inputTensor?.Dispose();
@@ -77,9 +83,6 @@ namespace ARArmDetection
         {
             LastRunConsumedNewResult = false;
             LastRunScheduledInference = false;
-            LastArmOnlyMaxScore = 0f;
-            _detections.Clear();
-            _needles.Clear();
 
             if (!IsReady)
             {
@@ -95,26 +98,52 @@ namespace ARArmDetection
 
             try
             {
+                if (_readbackPending)
+                {
+                    if (_pendingOutput == null)
+                    {
+                        _readbackPending = false;
+                        Status = "Pending output was lost";
+                        return _detections;
+                    }
+
+                    if (!_pendingOutput.IsReadbackRequestDone())
+                    {
+                        Status = $"inference pending; using {_detections.Count} cached arm(s)";
+                        return _detections;
+                    }
+
+                    using var cpuOutput = _pendingOutput.ReadbackAndClone();
+                    ParsePoseOutput(cpuOutput, _pendingImageWidth, _pendingImageHeight);
+                    _pendingOutput = null;
+                    _readbackPending = false;
+                    LastRunConsumedNewResult = true;
+                    Status = $"arms={_detections.Count} needles={_needles.Count} " +
+                             $"max={LastArmOnlyMaxScore:F3} conf>={_confidenceThreshold:F2} shape={_lastOutputShape}";
+                    return _detections;
+                }
+
                 TextureConverter.ToTensor(source, _inputTensor);
                 _worker.Schedule(_inputTensor);
                 LastRunScheduledInference = true;
 
-                var output = _worker.PeekOutput() as Tensor<float>;
-                if (output == null)
+                _pendingOutput = _worker.PeekOutput() as Tensor<float>;
+                if (_pendingOutput == null)
                 {
                     Status = "Model output is not float tensor";
                     return _detections;
                 }
 
-                using var cpuOutput = output.ReadbackAndClone();
-                ParsePoseOutput(cpuOutput, source.width, source.height);
-
-                LastRunConsumedNewResult = true;
-                Status = $"arms={_detections.Count} needles={_needles.Count} " +
-                         $"max={LastArmOnlyMaxScore:F3} conf>={_confidenceThreshold:F2} shape={_lastOutputShape}";
+                _pendingImageWidth = source.width;
+                _pendingImageHeight = source.height;
+                _pendingOutput.ReadbackRequest();
+                _readbackPending = true;
+                Status = $"inference scheduled; using {_detections.Count} cached arm(s)";
             }
             catch (Exception ex)
             {
+                _readbackPending = false;
+                _pendingOutput = null;
                 Status = $"{ex.GetType().Name}: {ex.Message}";
                 Debug.LogError($"[CustomArmDetector] Run failed: {ex}");
             }
@@ -124,6 +153,8 @@ namespace ARArmDetection
 
         private void LoadModel()
         {
+            _readbackPending = false;
+            _pendingOutput = null;
             _worker?.Dispose();
             _worker = null;
             _inputTensor?.Dispose();
@@ -143,6 +174,7 @@ namespace ARArmDetection
 
         private void ParsePoseOutput(Tensor<float> output, int imageWidth, int imageHeight)
         {
+            LastArmOnlyMaxScore = 0f;
             _candidates.Clear();
             _detections.Clear();
             _needles.Clear();
