@@ -28,17 +28,6 @@ namespace ARArmDetection
         public Keypoint[] Keypoints;
     }
 
-    /// <summary>
-    /// A needle detected by the arm+needle pose model. The tip is the contact
-    /// candidate; tip-&gt;hub gives the needle axis (insertion angle).
-    /// </summary>
-    public struct NeedleDetection
-    {
-        public Vector2 TipImage;
-        public Vector2 HubImage;
-        public float Confidence;
-    }
-
     public enum Side { Left, Right }
 
     public struct ArmDetection

@@ -1,23 +1,27 @@
 """
-Import the pre-converted 4-keypoint arm data (data/arm-pose-converted/) into the
-combined model as the `arm` class.
+Import the pre-converted arm data (data/arm-pose-converted/) into the arm-only
+model's label format.
 
-That folder is a detection dataset padded to 4-keypoint pose format: every arm has
-a box and 4 keypoint slots, but the keypoints are placeholders (all sit on the box
-centre with visibility 0 — i.e. NO real arm keypoints). Its class index is 1; the
-combined model uses arm=0, so we remap:
+That folder is a detection dataset padded to 4-keypoint pose format: every arm
+has a box and 4 keypoint slots. Depending on how it was generated the first two
+keypoints are either real PCA-derived axis endpoints (v=2) or placeholders on
+the box centre (v=0). The arm-only model uses 2 keypoints, so each line is
+truncated to its first two keypoint slots and the class is remapped to 0:
 
-    class 1 (arm-pose-converted)  ->  class 0 (arm)    box + 4 keypoint slots kept as-is
+    cls cx cy w h  k0 k0 v0  k1 k1 v1  k2 k2 v2  k3 k3 v3   (17 tokens, class 1)
+ -> 0   cx cy w h  k0 k0 v0  k1 k1 v1                       (11 tokens, class 0=arm)
 
-The placeholder keypoints (v=0) contribute no keypoint loss in Ultralytics pose
-training, so the arm class is learned as box-only here. The needle class (from
-needle_to_combined.py) supplies the real 4-keypoint supervision.
+Lines that are already 11 tokens (2-kpt) are kept as-is apart from the class
+remap. Keypoints with v=0 contribute no keypoint loss in Ultralytics pose
+training, so purely box-labeled arms are learned as box-only - fine for
+detection, but keypoint-label some real mannequin captures with 01_label.py
+to get a usable proximal/distal axis.
 
-    python scripts/arm_pose_to_combined.py
-    python scripts/arm_pose_to_combined.py --src data/arm-pose-converted
+    python scripts/import_arm_boxes.py
+    python scripts/import_arm_boxes.py --src data/arm-pose-converted
 
 Images go to data/raw/, labels to data/labels/, prefixed arm__ so stems never
-collide with the needle frames. Run 02_prepare_dataset.py afterwards.
+collide with other frames. Run 02_prepare_dataset.py afterwards.
 """
 import argparse
 import shutil
@@ -29,8 +33,9 @@ DATA = HERE.parent / "data"
 RAW = DATA / "raw"
 LABELS = DATA / "labels"
 
-ARM_CLASS = 0             # 'arm' in the combined model (arm=0, needle=1)
-NUM_TOKENS = 17           # cls + 4 box + 4 keypoints * 3
+ARM_CLASS = 0
+TOKENS_2KPT = 11          # cls + 4 box + 2 keypoints * 3
+TOKENS_4KPT = 17          # cls + 4 box + 4 keypoints * 3
 IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
 
 
@@ -43,16 +48,16 @@ def find_image(images_dir: Path, stem: str):
 
 
 def convert_line(tokens):
-    """One 17-token line -> same line with class remapped to arm, or None."""
-    if len(tokens) != NUM_TOKENS:
+    """One 11- or 17-token line -> 11-token arm-only line, or None if malformed."""
+    if len(tokens) not in (TOKENS_2KPT, TOKENS_4KPT):
         return None
-    return " ".join([str(ARM_CLASS), *tokens[1:]])
+    return " ".join([str(ARM_CLASS), *tokens[1:TOKENS_2KPT]])
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", default=str(DATA / "arm-pose-converted"),
-                    help="folder with images/ and labels/ (4-kpt pose txt)")
+                    help="folder with images/ and labels/ (pose txt, 2 or 4 kpts)")
     args = ap.parse_args()
 
     src = Path(args.src)
@@ -90,7 +95,7 @@ def main():
     if skipped_no_img:
         print(f"  {skipped_no_img} label(s) had no matching image and were skipped.")
     if skipped_bad:
-        print(f"  {skipped_bad} malformed label line(s) skipped (expected {NUM_TOKENS} tokens).")
+        print(f"  {skipped_bad} malformed label line(s) skipped (expected {TOKENS_2KPT} or {TOKENS_4KPT} tokens).")
     print("Next: python scripts/02_prepare_dataset.py  (then 03_train.py, 04_export.py)")
     return 0
 

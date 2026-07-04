@@ -1,23 +1,26 @@
 """
-Step 1 - Label keypoints for the arm + needle POSE model.
+Step 1 - Label keypoints for the ARM-ONLY pose model.
 
-This is a pose (keypoint) pipeline, NOT plain detection. Each instance has a
-box AND 2 keypoints. The keypoint MEANING depends on the class:
+This is a pose (keypoint) pipeline, NOT plain detection. Each arm instance has
+a box AND 2 keypoints:
 
-  class 0 = arm    -> kpt0 = proximal (near elbow / insertion zone), kpt1 = distal (wrist)
-  class 1 = needle -> kpt0 = tip (the contact point),               kpt1 = hub (back of needle)
+  kpt0 = proximal (near elbow / insertion zone)
+  kpt1 = distal   (wrist)
 
-Two keypoints per class is deliberate: YOLO-pose locks every instance to the
-same keypoint count, and 2-each fits perfectly. tip->hub gives the needle axis
-(insertion angle); proximal->distal gives the forearm axis for the AR overlay.
+proximal->distal gives the forearm axis the AR overlay renders along. The box
+is derived automatically from the two clicked points (padded), so labeling is
+just two clicks per arm.
+
+The deployment target is ONE mannequin right arm (Limbs & Things Advanced
+Venipuncture Arm) in a fixed position - capture from many headset viewpoints,
+distances and lighting conditions rather than many different arms.
 
 WORKFLOW
   1. Drop images into Training/data/raw/
   2. python scripts/01_label.py
   3. For each image:
        press  a  then click PROXIMAL, then DISTAL   -> adds one arm
-       press  n  then click TIP,      then HUB      -> adds one needle
-       (repeat to add more instances of either class)
+       (repeat if more than one arm is somehow in frame)
        u = undo last instance      r = redo current image from scratch
        SPACE / s = save + next      x = save as background (no objects) + next
        b = previous image           q = save + quit
@@ -39,22 +42,17 @@ RAW = DATA / "raw"
 LABELS = DATA / "labels"
 PREVIEW = DATA / "preview"
 
-CLASSES = ["arm", "needle"]
-# Per-class keypoint names, in label order (kpt0, kpt1).
-KPT_NAMES = {
-    0: ("proximal", "distal"),
-    1: ("tip", "hub"),
-}
-CLASS_COLOR = {0: (0, 200, 0), 1: (0, 128, 255)}  # BGR: arm=green, needle=orange
+ARM_CLASS = 0
+KPT_NAMES = ("proximal", "distal")
+ARM_COLOR = (0, 200, 0)  # BGR green
 BOX_PAD_FRAC = 0.10  # pad the box this fraction of its diagonal around the 2 kpts
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 
 
 class Instance:
-    __slots__ = ("cls", "p0", "p1")
+    __slots__ = ("p0", "p1")
 
-    def __init__(self, cls, p0, p1):
-        self.cls = cls
+    def __init__(self, p0, p1):
         self.p0 = p0  # (x, y) pixels
         self.p1 = p1
 
@@ -93,7 +91,7 @@ def write_label(img: Path, instances, w, h):
         px0, py0 = inst.p0[0] / w, inst.p0[1] / h
         px1, py1 = inst.p1[0] / w, inst.p1[1] / h
         lines.append(
-            f"{inst.cls} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f} "
+            f"{ARM_CLASS} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f} "
             f"{px0:.6f} {py0:.6f} 2 {px1:.6f} {py1:.6f} 2"
         )
     label_path(img).write_text("\n".join(lines) + ("\n" if lines else ""))
@@ -102,54 +100,46 @@ def write_label(img: Path, instances, w, h):
 def write_preview(img_bgr, instances, dest: Path):
     vis = img_bgr.copy()
     for inst in instances:
-        color = CLASS_COLOR[inst.cls]
         p0 = (int(inst.p0[0]), int(inst.p0[1]))
         p1 = (int(inst.p1[0]), int(inst.p1[1]))
-        cv2.line(vis, p0, p1, color, 2)
-        cv2.circle(vis, p0, 6, color, -1)          # kpt0 filled
-        cv2.circle(vis, p1, 6, color, 2)           # kpt1 ring
-        n0, n1 = KPT_NAMES[inst.cls]
-        cv2.putText(vis, n0, (p0[0] + 8, p0[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-        cv2.putText(vis, n1, (p1[0] + 8, p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        cv2.line(vis, p0, p1, ARM_COLOR, 2)
+        cv2.circle(vis, p0, 6, ARM_COLOR, -1)          # kpt0 filled
+        cv2.circle(vis, p1, 6, ARM_COLOR, 2)           # kpt1 ring
+        cv2.putText(vis, KPT_NAMES[0], (p0[0] + 8, p0[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ARM_COLOR, 1)
+        cv2.putText(vis, KPT_NAMES[1], (p1[0] + 8, p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ARM_COLOR, 1)
     cv2.imwrite(str(dest), vis)
 
 
-def draw_hud(canvas, img_name, idx, total, mode_cls, pending, instances):
+def draw_hud(canvas, img_name, idx, total, mode_active, pending, instances):
     h = canvas.shape[0]
     bar = canvas.copy()
     cv2.rectangle(bar, (0, h - 64), (canvas.shape[1], h), (0, 0, 0), -1)
     cv2.addWeighted(bar, 0.55, canvas, 0.45, 0, canvas)
 
-    counts = {0: 0, 1: 0}
-    for inst in instances:
-        counts[inst.cls] += 1
-    mode_txt = "-" if mode_cls is None else CLASSES[mode_cls]
     nxt = ""
-    if mode_cls is not None:
-        names = KPT_NAMES[mode_cls]
-        nxt = f" click {names[len(pending)]}" if len(pending) < 2 else ""
+    if mode_active and len(pending) < 2:
+        nxt = f" click {KPT_NAMES[len(pending)]}"
     cv2.putText(canvas, f"[{idx + 1}/{total}] {img_name}", (8, h - 42),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
     cv2.putText(canvas,
-                f"mode={mode_txt}{nxt}   arms={counts[0]} needles={counts[1]}",
+                f"mode={'arm' if mode_active else '-'}{nxt}   arms={len(instances)}",
                 (8, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
     cv2.putText(canvas,
-                "a=arm n=needle u=undo r=reset SPACE=save x=bg b=back q=quit",
+                "a=arm u=undo r=reset SPACE=save x=bg b=back q=quit",
                 (8, h - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 220, 255), 1)
 
 
-def render(img_bgr, instances, mode_cls, pending, img_name, idx, total):
+def render(img_bgr, instances, mode_active, pending, img_name, idx, total):
     canvas = img_bgr.copy()
     for inst in instances:
-        color = CLASS_COLOR[inst.cls]
         p0 = (int(inst.p0[0]), int(inst.p0[1]))
         p1 = (int(inst.p1[0]), int(inst.p1[1]))
-        cv2.line(canvas, p0, p1, color, 2)
-        cv2.circle(canvas, p0, 6, color, -1)
-        cv2.circle(canvas, p1, 6, color, 2)
-    if mode_cls is not None and pending:
-        cv2.circle(canvas, (int(pending[0][0]), int(pending[0][1])), 6, CLASS_COLOR[mode_cls], -1)
-    draw_hud(canvas, img_name, idx, total, mode_cls, pending, instances)
+        cv2.line(canvas, p0, p1, ARM_COLOR, 2)
+        cv2.circle(canvas, p0, 6, ARM_COLOR, -1)
+        cv2.circle(canvas, p1, 6, ARM_COLOR, 2)
+    if mode_active and pending:
+        cv2.circle(canvas, (int(pending[0][0]), int(pending[0][1])), 6, ARM_COLOR, -1)
+    draw_hud(canvas, img_name, idx, total, mode_active, pending, instances)
     return canvas
 
 
@@ -171,19 +161,19 @@ def main():
             return 0
         images = todo
 
-    print(f"Labeling {len(images)} image(s). a=arm n=needle, click 2 points each. SPACE=save.")
+    print(f"Labeling {len(images)} image(s). Press a, then click proximal + distal. SPACE=save.")
 
-    state = {"mode_cls": None, "pending": [], "instances": []}
+    state = {"mode_active": False, "pending": [], "instances": []}
 
     def on_mouse(event, x, y, flags, _):
-        if event != cv2.EVENT_LBUTTONDOWN or state["mode_cls"] is None:
+        if event != cv2.EVENT_LBUTTONDOWN or not state["mode_active"]:
             return
         state["pending"].append((float(x) / state["scale"], float(y) / state["scale"]))
         if len(state["pending"]) == 2:
-            state["instances"].append(Instance(state["mode_cls"], state["pending"][0], state["pending"][1]))
+            state["instances"].append(Instance(state["pending"][0], state["pending"][1]))
             state["pending"] = []
 
-    win = "label  (arm + needle keypoints)"
+    win = "label  (arm keypoints)"
     cv2.namedWindow(win)
     cv2.setMouseCallback(win, on_mouse)
 
@@ -199,25 +189,23 @@ def main():
         h, w = img_bgr.shape[:2]
         scale = min(1.0, args.max_width / float(w))
         disp = cv2.resize(img_bgr, (int(w * scale), int(h * scale))) if scale < 1.0 else img_bgr.copy()
-        state.update(mode_cls=None, pending=[], instances=[], scale=scale)
+        state.update(mode_active=False, pending=[], instances=[], scale=scale)
 
         while True:
-            frame = render(disp, state["instances"], state["mode_cls"], state["pending"],
+            frame = render(disp, state["instances"], state["mode_active"], state["pending"],
                            img.name, idx, len(images))
             cv2.imshow(win, frame)
             key = cv2.waitKey(20) & 0xFF
 
             if key == ord("a"):
-                state["mode_cls"], state["pending"] = 0, []
-            elif key == ord("n"):
-                state["mode_cls"], state["pending"] = 1, []
+                state["mode_active"], state["pending"] = True, []
             elif key == ord("u"):
                 if state["pending"]:
                     state["pending"] = []
                 elif state["instances"]:
                     state["instances"].pop()
             elif key == ord("r"):
-                state.update(mode_cls=None, pending=[], instances=[])
+                state.update(mode_active=False, pending=[], instances=[])
             elif key in (ord(" "), ord("s")):
                 write_label(img, state["instances"], w, h)
                 write_preview(img_bgr, state["instances"], PREVIEW / f"{img.stem}.jpg")

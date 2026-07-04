@@ -1,17 +1,18 @@
 """
-Step 2 - Build the YOLO-pose dataset (train/val split + data.yaml).
+Step 2 - Build the ARM-ONLY YOLO-pose dataset (train/val split + data.yaml).
 
 Takes the images in data/raw/ and the keypoint labels written by 01_label.py
-(data/labels/) and lays them out the way Ultralytics pose training expects:
+or import_arm_boxes.py (data/labels/) and lays them out the way Ultralytics
+pose training expects:
 
     data/pose/
       images/train  images/val
       labels/train  labels/val
       data.yaml
 
-data.yaml declares kpt_shape: [2, 3] (2 keypoints, each x/y/visibility) and the
-two classes (arm, needle). Only images that have a label file are included; an
-empty label file is kept as a background negative.
+data.yaml declares kpt_shape: [2, 3] (2 keypoints - proximal/distal - each
+x/y/visibility) and the single class (arm). Only images that have a label file
+are included; an empty label file is kept as a background negative.
 """
 import argparse
 import random
@@ -27,7 +28,7 @@ RAW = DATA / "raw"
 LABELS = DATA / "labels"
 POSE = DATA / "pose"
 
-CLASSES = ["arm", "needle"]
+CLASSES = ["arm"]
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 
 
@@ -73,8 +74,8 @@ def main():
         "path": str(POSE.resolve()),
         "train": "images/train",
         "val": "images/val",
-        "kpt_shape": [4, 3],         # 4 keypoints, each (x, y, visibility)
-        "flip_idx": [0, 1, 2, 3],    # collinear points, no L/R pairs -> identity
+        "kpt_shape": [2, 3],         # 2 keypoints (proximal, distal), each (x, y, visibility)
+        "flip_idx": [0, 1],          # collinear points, no L/R pairs -> identity
         "names": {i: n for i, n in enumerate(CLASSES)},
     }
     (POSE / "data.yaml").write_text(yaml.safe_dump(data_yaml, sort_keys=False))

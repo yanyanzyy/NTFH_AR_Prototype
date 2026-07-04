@@ -10,6 +10,9 @@ data/pose/
 data/preview/
 data/needle/
 data/arm-pose-converted/
+data/phlebotomy-src/
+data/downloads/
+markers/
 runs/
 *.pt
 *.onnx

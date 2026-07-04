@@ -1,20 +1,19 @@
 """
-Step 4 - Export trained pose weights to ONNX for Unity (Sentis).
+Step 4 - Export trained ARM-ONLY pose weights to ONNX for Unity (Inference Engine).
 
-    python scripts/04_export.py --weights runs/arm_needle_pose/weights/best.pt
+    python scripts/04_export.py --weights runs/arm_pose/weights/best.pt
 
 Exports a static-shape ONNX (opset 12, 320x320) and copies it into
 Assets/Models/ for the CustomArmDetector component to load.
 
-Output channel layout (per anchor), features-first [1, 18, N] (4 kpts, 2 classes):
+Output channel layout (per anchor), features-first [1, 11, N] (2 kpts, 1 class):
     0..3    box cx, cy, w, h       (input-pixel scale, 320x320)
-    4..5    class scores           (0 = arm, 1 = needle)
-    6..17   keypoints              (kx0,ky0,v0, ... kx3,ky3,v3)
-            needle: kpt0 = tip, kpt3 = hub/plunger (kpt1-2 mid-barrel)
-            arm:    placeholder (v ~ 0; box-only until arm keypoints are labeled)
+    4       arm score
+    5..10   keypoints              (kx0,ky0,v0, kx1,ky1,v1)
+            kpt0 = proximal (near elbow), kpt1 = distal (wrist)
 
-NOTE: CustomArmDetector.cs still parses the old [1, 12, N] (2-kpt) layout; it must
-be updated to [1, 18, N] before this ONNX will work in Unity.
+CustomArmDetector.cs parses exactly this [1, 11, N] layout (and falls back to
+the legacy 2-class [1, 12/18, N] layouts for older combined models).
 """
 import argparse
 import shutil
@@ -33,7 +32,7 @@ def main():
     ap.add_argument("--weights", required=True, help="path to best.pt")
     ap.add_argument("--imgsz", type=int, default=320)
     ap.add_argument("--opset", type=int, default=12)
-    ap.add_argument("--name", default="arm-needle-pose-320.onnx")
+    ap.add_argument("--name", default="arm-pose-320.onnx")
     args = ap.parse_args()
 
     weights = Path(args.weights)

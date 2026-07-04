@@ -7,25 +7,21 @@ namespace ARArmDetection
     /// Detects when the needle tip is close to the mannequin arm surface and fires
     /// events with the projected injection site in world space.
     ///
-    /// PRIMARY source is the vision pose model: ArmDetectionManager.TryGetNeedle gives
-    /// the detected needle tip directly. If no needle is detected and a hand skeleton is
-    /// assigned, it falls back to the OVR right-hand index fingertip as a proxy for the
-    /// tip (within ~3 cm of the insertion point in a standard IV grip).
+    /// The needle tip comes from OVR hand tracking: the right-hand index fingertip is
+    /// used as a proxy for the tip (within ~3 cm of the insertion point in a standard
+    /// IV grip). The vision model only detects the arm.
     ///
     /// SETUP:
-    ///   Drag the ArmDetectionManager into _armManager. The needle comes from the pose
-    ///   model automatically. Optionally drag an OVRSkeleton into _rightHandSkeleton to
-    ///   enable the hand-tracking fallback.
+    ///   Drag the ArmDetectionManager into _armManager and the OVRSkeleton of the
+    ///   nurse's right hand (from the Hand Tracking building block) into
+    ///   _rightHandSkeleton.
     /// </summary>
     public class InjectionSiteDetector : MonoBehaviour
     {
         [SerializeField] private ArmDetectionManager _armManager;
 
-        [Header("Fallback (optional)")]
-        [Tooltip("Use the OVR index fingertip as a needle-tip proxy when the pose model sees no needle.")]
-        [SerializeField] private bool _useHandFallback = true;
-
-        [Tooltip("OVRSkeleton component on the nurse's right hand (from the Hand Tracking building block). Optional.")]
+        [Header("Needle-tip source (hand tracking)")]
+        [Tooltip("OVRSkeleton component on the nurse's right hand (from the Hand Tracking building block).")]
         [SerializeField] private OVRSkeleton _rightHandSkeleton;
 
         [Tooltip("Physical radius of the mannequin arm in metres (forearm ≈ 4.25 cm). Used to project the fingertip onto the arm surface.")]
@@ -98,21 +94,15 @@ namespace ARArmDetection
         // ── Helpers ───────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Resolves the needle tip: vision pose model first, OVR fingertip fallback.
+        /// Resolves the needle tip from the OVR right-hand index fingertip.
         /// </summary>
         private bool TryGetNeedleTip(out Vector3 tip)
         {
-            if (_armManager.TryGetNeedle(out tip, out _))
-                return true;
-
-            if (_useHandFallback)
+            if (_indexTipBone == null) TryResolveBone();
+            if (_indexTipBone != null)
             {
-                if (_indexTipBone == null) TryResolveBone();
-                if (_indexTipBone != null)
-                {
-                    tip = _indexTipBone.position;
-                    return true;
-                }
+                tip = _indexTipBone.position;
+                return true;
             }
 
             tip = default;

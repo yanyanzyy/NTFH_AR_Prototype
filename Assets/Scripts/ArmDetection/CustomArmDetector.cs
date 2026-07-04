@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using Unity.InferenceEngine;
 using UnityEngine;
@@ -6,18 +7,28 @@ using UnityEngine;
 namespace ARArmDetection
 {
     /// <summary>
-    /// Runs the arm + needle POSE model (YOLO11n-pose) exported from Ultralytics.
-    /// Two classes, two keypoints each:
-    ///   class 0 = arm    -> kpt0 = proximal (near elbow), kpt1 = distal (wrist)
-    ///   class 1 = needle -> kpt0 = tip (contact point),   kpt1 = hub (back of needle)
+    /// Runs the ARM-ONLY pose model (YOLO11n-pose) exported from Ultralytics.
+    /// Single class, two keypoints:
+    ///   kpt0 = proximal (near elbow / insertion zone), kpt1 = distal (wrist)
     ///
     /// Arms are returned as <see cref="PersonDetection"/> (proximal mapped to the
     /// shoulder keypoint slot, distal to the wrist slot) so the existing
-    /// ArmDetectionManager / overlay pipeline consumes them unchanged. Needles are
-    /// exposed separately via <see cref="LastNeedles"/> for contact detection.
+    /// ArmDetectionManager / overlay pipeline consumes them unchanged.
     ///
-    /// Expected ONNX output (features-first [1, 12, N]):
-    ///   0..3  box cx,cy,w,h   4..5 class scores   6..11 kpts (kx0,ky0,v0, kx1,ky1,v1)
+    /// Expected ONNX output (features-first [1, 11, N]):
+    ///   0..3  box cx,cy,w,h   4 arm score   5..10 kpts (kx0,ky0,v0, kx1,ky1,v1)
+    /// Legacy 2-class exports ([1, 12, N] / [1, 18, N]) are still parsed - the arm
+    /// score is read from channel 4 + _armClassId - so an older combined ONNX keeps
+    /// working until the arm-only model is assigned.
+    ///
+    /// Quest 3 frame-rate strategy:
+    ///  - inference is layer-sliced via Worker.ScheduleIterable, so each rendered
+    ///    frame only dispatches _layersPerFrame layers of GPU work instead of the
+    ///    whole network in one spike;
+    ///  - the output readback is asynchronous (ReadbackRequest), so the CPU never
+    ///    blocks waiting on the GPU;
+    ///  - between completed inferences the last detections are served from cache
+    ///    (the manager's smoothing/lock rides across those frames).
     /// </summary>
     public class CustomArmDetector : MonoBehaviour
     {
@@ -25,27 +36,35 @@ namespace ARArmDetection
         [SerializeField] private ModelAsset _modelAsset;
         [SerializeField] private BackendType _backend = BackendType.GPUCompute;
         [SerializeField] private int _inputSize = 320;
+        [Tooltip("Quantize model weights to FP16 at load. Halves weight memory and is faster on the " +
+                 "Quest GPU with no practical accuracy loss for this model.")]
+        [SerializeField] private bool _quantizeToFp16 = true;
+
+        [Header("Scheduling (frame-rate vs detection latency)")]
+        [Tooltip("How many model layers to dispatch per rendered frame. Spreads the GPU cost of one " +
+                 "inference over several frames so the app holds native frame rate. Lower = smoother " +
+                 "frames but fewer detections per second. 0 = dispatch the whole model in one frame.")]
+        [SerializeField, Range(0, 64)] private int _layersPerFrame = 14;
 
         [Header("Filtering")]
         [SerializeField, Range(0f, 1f)] private float _confidenceThreshold = 0.25f;
         [SerializeField, Range(0f, 1f)] private float _nmsIoUThreshold = 0.45f;
         [SerializeField, Range(1, 50)] private int _maxDetections = 5;
 
-        [Header("Class mapping (must match the model's training names dict)")]
-        [Tooltip("Class index the pose model uses for the arm. Check the ONNX metadata's 'names' field after export.")]
+        [Header("Legacy 2-class models only")]
+        [Tooltip("Only used when an old 2-class (arm+needle) ONNX is assigned: which class index is " +
+                 "the arm. Ignored by the arm-only [1,11,N] export.")]
         [SerializeField] private int _armClassId = 1;
-        [Tooltip("Class index the pose model uses for the needle/syringe. Check the ONNX metadata's 'names' field after export.")]
-        [SerializeField] private int _needleClassId = 0;
 
         private Worker _worker;
         private Tensor<float> _inputTensor;
+        private IEnumerator _scheduleSteps;
         private Tensor<float> _pendingOutput;
         private bool _readbackPending;
         private int _pendingImageWidth;
         private int _pendingImageHeight;
-        private readonly List<PersonDetection> _detections = new();
-        private readonly List<NeedleDetection> _needles = new();
         private readonly List<PoseCandidate> _candidates = new();
+        private readonly List<PersonDetection> _detections = new();
         private string _lastOutputShape = "-";
 
         public bool IsReady => isActiveAndEnabled && _worker != null && _inputTensor != null;
@@ -55,22 +74,19 @@ namespace ARArmDetection
         public float ConfidenceThreshold => _confidenceThreshold;
         public string Status { get; private set; } = "Not started";
 
-        /// <summary>Needles detected on the most recent run (tip + hub in image space).</summary>
-        public IReadOnlyList<NeedleDetection> LastNeedles => _needles;
-
         private struct PoseCandidate
         {
-            public int Cls;
             public Rect Bounds;
             public float Score;
-            public Vector2 K0;   // arm: proximal | needle: tip
-            public Vector2 K1;   // arm: distal   | needle: hub
+            public Vector2 K0;   // proximal (near elbow)
+            public Vector2 K1;   // distal (wrist)
         }
 
         private void OnEnable() => LoadModel();
 
         private void OnDisable()
         {
+            _scheduleSteps = null;
             _readbackPending = false;
             _pendingOutput = null;
             _worker?.Dispose();
@@ -100,48 +116,46 @@ namespace ARArmDetection
             {
                 if (_readbackPending)
                 {
-                    if (_pendingOutput == null)
-                    {
-                        _readbackPending = false;
-                        Status = "Pending output was lost";
-                        return _detections;
-                    }
-
-                    if (!_pendingOutput.IsReadbackRequestDone())
-                    {
-                        Status = $"inference pending; using {_detections.Count} cached arm(s)";
-                        return _detections;
-                    }
-
-                    using var cpuOutput = _pendingOutput.ReadbackAndClone();
-                    ParsePoseOutput(cpuOutput, _pendingImageWidth, _pendingImageHeight);
-                    _pendingOutput = null;
-                    _readbackPending = false;
-                    LastRunConsumedNewResult = true;
-                    Status = $"arms={_detections.Count} needles={_needles.Count} " +
-                             $"max={LastArmOnlyMaxScore:F3} conf>={_confidenceThreshold:F2} shape={_lastOutputShape}";
+                    TryConsumeReadback();
                     return _detections;
                 }
 
-                TextureConverter.ToTensor(source, _inputTensor);
-                _worker.Schedule(_inputTensor);
-                LastRunScheduledInference = true;
-
-                _pendingOutput = _worker.PeekOutput() as Tensor<float>;
-                if (_pendingOutput == null)
+                if (_scheduleSteps != null)
                 {
-                    Status = "Model output is not float tensor";
+                    if (AdvanceSchedule())
+                    {
+                        Status = $"dispatching layers; using {_detections.Count} cached arm(s)";
+                        return _detections;
+                    }
+                    BeginReadback();
                     return _detections;
                 }
 
+                // Start a new inference from the freshest camera frame.
+                TextureConverter.ToTensor(source, _inputTensor);
                 _pendingImageWidth = source.width;
                 _pendingImageHeight = source.height;
-                _pendingOutput.ReadbackRequest();
-                _readbackPending = true;
-                Status = $"inference scheduled; using {_detections.Count} cached arm(s)";
+                LastRunScheduledInference = true;
+
+                if (_layersPerFrame > 0)
+                {
+                    _scheduleSteps = _worker.ScheduleIterable(_inputTensor);
+                    if (AdvanceSchedule())
+                    {
+                        Status = $"inference started; using {_detections.Count} cached arm(s)";
+                        return _detections;
+                    }
+                }
+                else
+                {
+                    _worker.Schedule(_inputTensor);
+                }
+
+                BeginReadback();
             }
             catch (Exception ex)
             {
+                _scheduleSteps = null;
                 _readbackPending = false;
                 _pendingOutput = null;
                 Status = $"{ex.GetType().Name}: {ex.Message}";
@@ -151,8 +165,62 @@ namespace ARArmDetection
             return _detections;
         }
 
+        /// <summary>Dispatches up to _layersPerFrame layers. Returns true while layers remain.</summary>
+        private bool AdvanceSchedule()
+        {
+            int budget = Mathf.Max(1, _layersPerFrame);
+            for (int i = 0; i < budget; i++)
+            {
+                if (!_scheduleSteps.MoveNext())
+                {
+                    _scheduleSteps = null;
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private void BeginReadback()
+        {
+            _pendingOutput = _worker.PeekOutput() as Tensor<float>;
+            if (_pendingOutput == null)
+            {
+                Status = "Model output is not float tensor";
+                return;
+            }
+
+            _pendingOutput.ReadbackRequest();
+            _readbackPending = true;
+            Status = $"awaiting readback; using {_detections.Count} cached arm(s)";
+        }
+
+        private void TryConsumeReadback()
+        {
+            if (_pendingOutput == null)
+            {
+                _readbackPending = false;
+                Status = "Pending output was lost";
+                return;
+            }
+
+            if (!_pendingOutput.IsReadbackRequestDone())
+            {
+                Status = $"readback pending; using {_detections.Count} cached arm(s)";
+                return;
+            }
+
+            using var cpuOutput = _pendingOutput.ReadbackAndClone();
+            ParsePoseOutput(cpuOutput, _pendingImageWidth, _pendingImageHeight);
+            _pendingOutput = null;
+            _readbackPending = false;
+            LastRunConsumedNewResult = true;
+            Status = $"arms={_detections.Count} max={LastArmOnlyMaxScore:F3} " +
+                     $"conf>={_confidenceThreshold:F2} shape={_lastOutputShape}";
+        }
+
         private void LoadModel()
         {
+            _scheduleSteps = null;
             _readbackPending = false;
             _pendingOutput = null;
             _worker?.Dispose();
@@ -167,6 +235,8 @@ namespace ARArmDetection
             }
 
             var model = ModelLoader.Load(_modelAsset);
+            if (_quantizeToFp16)
+                ModelQuantizer.QuantizeWeights(QuantizationType.Float16, ref model);
             _worker = new Worker(model, _backend);
             _inputTensor = new Tensor<float>(new TensorShape(1, 3, _inputSize, _inputSize));
             Status = "Model loaded";
@@ -177,25 +247,40 @@ namespace ARArmDetection
             LastArmOnlyMaxScore = 0f;
             _candidates.Clear();
             _detections.Clear();
-            _needles.Clear();
 
             var shape = output.shape;
             _lastOutputShape = shape.ToString();
             var data = output.DownloadToArray();
 
-            if (!TryGetYoloLayout(shape, out int rows, out int features, out bool featuresFirst) || features < 12)
+            if (!TryGetYoloLayout(shape, out int rows, out int features, out bool featuresFirst))
             {
-                Status = $"Unsupported pose output shape {shape} (need >=12 features)";
+                Status = $"Unsupported pose output shape {shape}";
+                return;
+            }
+
+            int scoreChannel;
+            int kptOffset;
+            if (features == 11)
+            {
+                // Arm-only export: 4 box + 1 score + 2 kpts.
+                scoreChannel = 4;
+                kptOffset = 5;
+            }
+            else if (features == 12 || features == 18)
+            {
+                // Legacy 2-class exports (2 or 4 kpts): 4 box + 2 scores + kpts.
+                scoreChannel = 4 + Mathf.Clamp(_armClassId, 0, 1);
+                kptOffset = 6;
+            }
+            else
+            {
+                Status = $"Unsupported pose output shape {shape} (expected 11, 12 or 18 features)";
                 return;
             }
 
             for (int i = 0; i < rows; i++)
             {
-                float armScore = ReadFeature(data, shape, i, 4 + _armClassId, featuresFirst);
-                float needleScore = ReadFeature(data, shape, i, 4 + _needleClassId, featuresFirst);
-                int cls = needleScore > armScore ? _needleClassId : _armClassId;
-                float score = Mathf.Max(armScore, needleScore);
-
+                float score = ReadFeature(data, shape, i, scoreChannel, featuresFirst);
                 if (score > LastArmOnlyMaxScore) LastArmOnlyMaxScore = score;
                 if (score < _confidenceThreshold) continue;
 
@@ -209,37 +294,31 @@ namespace ARArmDetection
 
                 _candidates.Add(new PoseCandidate
                 {
-                    Cls = cls,
                     Bounds = bounds,
                     Score = score,
-                    K0 = ReadKeypoint(data, shape, i, 0, featuresFirst, imageWidth, imageHeight),
-                    K1 = ReadKeypoint(data, shape, i, 1, featuresFirst, imageWidth, imageHeight),
+                    K0 = ReadKeypoint(data, shape, i, kptOffset, 0, featuresFirst, imageWidth, imageHeight),
+                    K1 = ReadKeypoint(data, shape, i, kptOffset, 1, featuresFirst, imageWidth, imageHeight),
                 });
             }
 
             _candidates.Sort((a, b) => b.Score.CompareTo(a.Score));
 
-            // Class-aware NMS, then route arms vs needles to their consumers.
-            var kept = new List<PoseCandidate>();
-            for (int i = 0; i < _candidates.Count && kept.Count < _maxDetections; i++)
+            var keptBounds = new List<Rect>();
+            for (int i = 0; i < _candidates.Count && _detections.Count < _maxDetections; i++)
             {
                 var c = _candidates[i];
                 bool suppressed = false;
-                for (int j = 0; j < kept.Count; j++)
+                for (int j = 0; j < keptBounds.Count; j++)
                 {
-                    if (kept[j].Cls == c.Cls && IoU(c.Bounds, kept[j].Bounds) > _nmsIoUThreshold)
+                    if (IoU(c.Bounds, keptBounds[j]) > _nmsIoUThreshold)
                     {
                         suppressed = true;
                         break;
                     }
                 }
                 if (suppressed) continue;
-                kept.Add(c);
-
-                if (c.Cls == _armClassId)
-                    _detections.Add(ToPersonDetection(c));
-                else
-                    _needles.Add(new NeedleDetection { TipImage = c.K0, HubImage = c.K1, Confidence = c.Score });
+                keptBounds.Add(c.Bounds);
+                _detections.Add(ToPersonDetection(c));
             }
         }
 
@@ -256,10 +335,10 @@ namespace ARArmDetection
                 if (d1 <= 32 && d2 > d1)
                 {
                     features = d1; rows = d2; featuresFirst = true;
-                    return features >= 12;
+                    return features >= 11;
                 }
                 features = d2; rows = d1; featuresFirst = false;
-                return features >= 12;
+                return features >= 11;
             }
 
             if (shape.rank == 2)
@@ -269,10 +348,10 @@ namespace ARArmDetection
                 if (d0 <= 32 && d1 > d0)
                 {
                     features = d0; rows = d1; featuresFirst = true;
-                    return features >= 12;
+                    return features >= 11;
                 }
                 features = d1; rows = d0; featuresFirst = false;
-                return features >= 12;
+                return features >= 11;
             }
 
             return false;
@@ -292,11 +371,11 @@ namespace ARArmDetection
             return featuresFirst ? data[feature * rows2 + row] : data[row * features2 + feature];
         }
 
-        private Vector2 ReadKeypoint(float[] data, TensorShape shape, int row, int k,
+        private Vector2 ReadKeypoint(float[] data, TensorShape shape, int row, int kptOffset, int k,
                                      bool featuresFirst, int imageWidth, int imageHeight)
         {
-            float kx = ReadFeature(data, shape, row, 6 + k * 3, featuresFirst);
-            float ky = ReadFeature(data, shape, row, 7 + k * 3, featuresFirst);
+            float kx = ReadFeature(data, shape, row, kptOffset + k * 3, featuresFirst);
+            float ky = ReadFeature(data, shape, row, kptOffset + 1 + k * 3, featuresFirst);
             bool normalized = Mathf.Max(Mathf.Abs(kx), Mathf.Abs(ky)) <= 2f;
             float scaleX = normalized ? imageWidth : imageWidth / (float)_inputSize;
             float scaleY = normalized ? imageHeight : imageHeight / (float)_inputSize;

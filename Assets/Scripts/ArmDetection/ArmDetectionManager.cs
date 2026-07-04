@@ -36,12 +36,6 @@ namespace ARArmDetection
         [SerializeField, Range(0, 90)] private int _armOnlyLockLostFrames = 30;
         [SerializeField, Range(1, 12)] private int _customDetectorEveryNFrames = 1;
 
-        [Header("Needle (pose model)")]
-        [Tooltip("How strongly to smooth the needle tip/hub in world space (0 = none, 1 = frozen).")]
-        [SerializeField, Range(0f, 1f)] private float _needleWorldSmoothing = 0.5f;
-        [Tooltip("Depth (m) used to project the needle when no arm is locked to borrow depth from.")]
-        [SerializeField] private float _needleFallbackDepthMeters = 0.5f;
-
         [Header("Depth-based arm axis (bypasses keypoint regression)")]
         [Tooltip("When a depth raycaster is available, estimate the arm's 3D axis by sampling a grid " +
                  "of points across the detected box and raycasting them against real-world depth, then " +
@@ -114,21 +108,6 @@ namespace ARArmDetection
         /// or failed this frame. Surfaced in the debug HUD to diagnose depth-API issues.</summary>
         public string DepthAxisStatus { get; private set; } = "Not attempted yet";
 
-        /// <summary>True when the pose model detected a needle this frame (smoothed world pose valid).</summary>
-        public bool HasNeedle => _hasNeedle;
-
-        /// <summary>
-        /// Returns the smoothed needle tip and hub world positions from the pose model.
-        /// tip is the contact candidate; tip-&gt;hub is the needle axis (insertion angle).
-        /// Returns false when no needle is currently detected.
-        /// </summary>
-        public bool TryGetNeedle(out Vector3 tip, out Vector3 hub)
-        {
-            tip = _needleTipWorld;
-            hub = _needleHubWorld;
-            return _hasNeedle;
-        }
-
         private struct ArmCandidate
         {
             public Vector3 Shoulder;
@@ -150,14 +129,9 @@ namespace ARArmDetection
         private PersonDetection _stableArmDetection;
         private int _stableArmLostFrames;
         private bool _currentDetectionsAreMediaPipe;
-        private bool _currentDetectionsAreCustom;
         private int _customDetectorFrameCounter;
         private readonly List<PersonDetection> _cachedCustomDetections = new();
 
-        private bool _hasNeedle;
-        private bool _hadNeedlePrev;
-        private Vector3 _needleTipWorld;
-        private Vector3 _needleHubWorld;
         private bool _hasStableFixedAxisDepth;
         private float _stableFixedAxisDepth;
 
@@ -195,7 +169,6 @@ namespace ARArmDetection
             if (!_cameraSource.HasFrame) { ManagerStatus = "Waiting: no camera frame"; return; }
             if (!HasReadyDetector()) { ManagerStatus = "Waiting: detector not ready"; return; }
 
-            _currentDetectionsAreCustom = false;
             _currentDetectionsAreMediaPipe = false;
             List<PersonDetection> persons = RunPrimaryDetector();
             LastPersonCount = persons.Count;
@@ -276,60 +249,11 @@ namespace ARArmDetection
             var camTransform = _cameraSource.CameraTransform;
             _overlay.Render(found ? (best.Shoulder, best.Wrist) : null, camTransform);
 
-            UpdateNeedle();
-
             LastFoundArm = found;
             _debugHUD?.ReportDetections(persons.Count, found ? 1 : 0);
         }
 
         public float GetEstimatedDepth(PersonDetection p) => EstimateDepth(p);
-
-        /// <summary>
-        /// Projects the best needle (from the pose model) into world space and smooths
-        /// it. Borrows the locked arm's depth when available so the tip lands on/near
-        /// the arm surface; otherwise uses the configured fallback depth (refined by the
-        /// environment depth raycast when supported).
-        /// </summary>
-        private void UpdateNeedle()
-        {
-            _hasNeedle = false;
-
-            if (!_currentDetectionsAreCustom || _customArmDetector == null)
-            {
-                _hadNeedlePrev = false;
-                return;
-            }
-
-            var needles = _customArmDetector.LastNeedles;
-            if (needles == null || needles.Count == 0)
-            {
-                _hadNeedlePrev = false;
-                return;
-            }
-
-            NeedleDetection best = needles[0];
-            for (int i = 1; i < needles.Count; i++)
-                if (needles[i].Confidence > best.Confidence) best = needles[i];
-
-            float depth = _needleFallbackDepthMeters;
-            if (IsLocked)
-                depth = Vector3.Distance(_cameraSource.CameraPose.position, _smoothedWristWorld);
-
-            Vector3 tip = ProjectImagePoint(best.TipImage, depth, out bool _);
-            Vector3 hub = ProjectImagePoint(best.HubImage, depth, out bool _);
-
-            if (_hadNeedlePrev)
-            {
-                float t = 1f - _needleWorldSmoothing;
-                tip = Vector3.Lerp(_needleTipWorld, tip, t);
-                hub = Vector3.Lerp(_needleHubWorld, hub, t);
-            }
-
-            _needleTipWorld = tip;
-            _needleHubWorld = hub;
-            _hasNeedle = true;
-            _hadNeedlePrev = true;
-        }
 
         private bool HasReadyDetector()
         {
@@ -358,7 +282,6 @@ namespace ARArmDetection
 
                 if (_cachedCustomDetections.Count > 0 || !_fallbackToMediaPipe || _mediaPipeDetector == null || !_mediaPipeDetector.IsReady)
                 {
-                    _currentDetectionsAreCustom = true;
                     ManagerStatus = "Running [Custom arm detector]";
                     return _cachedCustomDetections;
                 }
@@ -373,7 +296,6 @@ namespace ARArmDetection
                 return mediaPipePersons;
             }
 
-            _currentDetectionsAreCustom = true;
             return _cachedCustomDetections;
         }
 
