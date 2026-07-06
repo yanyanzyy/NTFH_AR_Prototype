@@ -13,6 +13,8 @@ data/arm-pose-converted/
 data/phlebotomy-src/
 data/downloads/
 markers/
-runs/
-*.pt
 *.onnx
+
+# Trained checkpoints + run metadata (args.yaml, results.csv, curves, weights)
+# are tracked so the fine-tuned model ships with the repo.
+!runs/**/*.pt

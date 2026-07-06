@@ -455,7 +455,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.DetectionModeButton
   _manager: {fileID: 2062675444}
   _distanceMeters: 1.4
-  _heightAboveCamera: 1
+  _heightInViewMeters: 0.55
+  _rightInViewMeters: 0.48
 --- !u!1 &405791717
 GameObject:
   m_ObjectHideFlags: 0
@@ -2291,7 +2292,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.InjectionSiteDetector
   _armManager: {fileID: 2062675444}
-  _useHandFallback: 1
   _rightHandSkeleton: {fileID: 426222574}
   _armRadiusMeters: 0.0425
   _approachRadiusMeters: 0.07
@@ -2650,11 +2650,12 @@ MonoBehaviour:
   _modelAsset: {fileID: 5022602860645237092, guid: 63d0c4c19806b7642942e7b57ad84d36, type: 3}
   _backend: 256
   _inputSize: 640
+  _quantizeToFp16: 0
+  _layersPerFrame: 14
   _confidenceThreshold: 0.03
   _nmsIoUThreshold: 0.25
   _maxDetections: 5
   _armClassId: 1
-  _needleClassId: 0
 --- !u!1 &2026037911
 GameObject:
   m_ObjectHideFlags: 0
@@ -2737,8 +2738,6 @@ MonoBehaviour:
   _armOnlyWorldSmoothing: 0.9
   _armOnlyLockLostFrames: 45
   _customDetectorEveryNFrames: 2
-  _needleWorldSmoothing: 0.5
-  _needleFallbackDepthMeters: 0.5
   _useDepthAxisEstimation: 0
   _depthSampleGrid: 6
   _swapDepthAxisEndpoints: 0

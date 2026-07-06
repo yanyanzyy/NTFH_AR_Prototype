@@ -209,13 +209,43 @@ namespace ARArmDetection
                 return;
             }
 
-            using var cpuOutput = _pendingOutput.ReadbackAndClone();
-            ParsePoseOutput(cpuOutput, _pendingImageWidth, _pendingImageHeight);
+            // IsReadbackRequestDone() only reports .done, not .hasError - an async GPU
+            // readback that finished WITH an error is still "done", so ReadbackAndClone()
+            // throws "Cannot access the data as it is not available" (common on Quest).
+            // The failed async request has already been consumed, so a second
+            // ReadbackAndClone() issues a fresh *blocking* readback of the same still-valid
+            // buffer - recovering this frame instead of dropping it. If that also fails we
+            // drop the frame and re-run next frame, riding on the cached detections.
+            Tensor<float> cpuOutput = null;
+            try
+            {
+                cpuOutput = _pendingOutput.ReadbackAndClone();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[CustomArmDetector] Async readback failed ({ex.Message}); retrying synchronously.");
+                try
+                {
+                    cpuOutput = _pendingOutput.ReadbackAndClone();
+                }
+                catch (Exception ex2)
+                {
+                    Status = $"readback dropped ({ex2.GetType().Name}); using {_detections.Count} cached arm(s)";
+                    Debug.LogWarning($"[CustomArmDetector] Readback dropped: {ex2.Message}");
+                }
+            }
+
+            if (cpuOutput != null)
+            {
+                using (cpuOutput)
+                    ParsePoseOutput(cpuOutput, _pendingImageWidth, _pendingImageHeight);
+                LastRunConsumedNewResult = true;
+                Status = $"arms={_detections.Count} max={LastArmOnlyMaxScore:F3} " +
+                         $"conf>={_confidenceThreshold:F2} shape={_lastOutputShape}";
+            }
+
             _pendingOutput = null;
             _readbackPending = false;
-            LastRunConsumedNewResult = true;
-            Status = $"arms={_detections.Count} max={LastArmOnlyMaxScore:F3} " +
-                     $"conf>={_confidenceThreshold:F2} shape={_lastOutputShape}";
         }
 
         private void LoadModel()
