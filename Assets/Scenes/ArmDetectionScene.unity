@@ -1691,7 +1691,7 @@ MonoBehaviour:
   _wearerSkeletons:
   - {fileID: 1985811706}
   - {fileID: 426222574}
-  _occluderRadius: 0.12
+  _occluderRadius: 0.055
 --- !u!224 &1229135957 stripped
 RectTransform:
   m_CorrespondingSourceObject: {fileID: 3259285889726014650, guid: 5713b959e3c77a58fb258133fc8e4aef, type: 3}

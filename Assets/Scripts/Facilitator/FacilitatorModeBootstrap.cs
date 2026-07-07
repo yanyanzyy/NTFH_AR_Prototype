@@ -9,8 +9,8 @@ namespace ARArmDetection.Facilitator
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void CreateForArmDetectionScene()
         {
-            if (Object.FindFirstObjectByType<ArmDetectionManager>() == null) return;
-            if (Object.FindFirstObjectByType<FacilitatorModeController>() != null) return;
+            if (Object.FindAnyObjectByType<ArmDetectionManager>() == null) return;
+            if (Object.FindAnyObjectByType<FacilitatorModeController>() != null) return;
 
             var procedure = Resources.Load<FacilitatorProcedure>(DefaultProcedurePath);
             if (procedure == null)
