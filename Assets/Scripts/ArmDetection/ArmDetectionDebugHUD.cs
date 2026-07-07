@@ -78,6 +78,7 @@ namespace ARArmDetection
                 $"Persons   : {personCount} detected\n" +
                 $"Arm status: {armStatus}\n" +
                 $"Arm found : {(foundArm ? "<color=lime>YES</color>" : "no")}\n" +
+                $"Lock      : {(_manager != null ? (_manager.IsLocked ? $"<color=lime>{_manager.LockStatus}</color>" : _manager.LockStatus) : "—")}\n" +
                 $"DepthAxis : {(_manager != null ? _manager.DepthAxisStatus : "—")}\n" +
                 $"MaxArmKP  : {(_manager != null ? _manager.LastMaxArmScore.ToString("F3") : "—")}  " +
                 $"<color=grey>(lower threshold if < threshold)</color>\n" +

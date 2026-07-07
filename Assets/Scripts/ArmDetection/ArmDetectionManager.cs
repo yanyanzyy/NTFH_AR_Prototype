@@ -33,8 +33,26 @@ namespace ARArmDetection
         [SerializeField] private float _armOnlyStabilityRadiusPixels = 420f;
         [SerializeField, Range(0f, 1f)] private float _armOnlyImageSmoothing = 0.65f;
         [SerializeField, Range(0f, 1f)] private float _armOnlyWorldSmoothing = 0.55f;
-        [SerializeField, Range(0, 90)] private int _armOnlyLockLostFrames = 30;
         [SerializeField, Range(1, 12)] private int _customDetectorEveryNFrames = 1;
+
+        [Header("Target lock")]
+        [Tooltip("Consecutive frames a candidate must stay in roughly the same world position before " +
+                 "the overlay locks on. Prevents snapping onto single-frame false positives.")]
+        [SerializeField, Range(1, 30)] private int _acquireConsistentFrames = 4;
+        [Tooltip("World radius (m) a candidate may drift between frames and still count toward acquisition.")]
+        [SerializeField] private float _acquireRadiusMeters = 0.3f;
+        [Tooltip("While locked, only detections whose midpoint lies within this distance (m) of the locked " +
+                 "arm can update it. Anything outside is ignored, so the overlay never jumps to another arm.")]
+        [SerializeField] private float _lockGateRadiusMeters = 0.35f;
+        [Tooltip("The gate radius grows at this rate (m/s) while the locked arm is undetected, so a " +
+                 "mannequin arm that was moved during a detection dropout can be re-captured.")]
+        [SerializeField] private float _lockGateGrowPerSecondLost = 0.25f;
+        [Tooltip("Upper bound (m) for the grown gate radius.")]
+        [SerializeField] private float _lockGateMaxRadiusMeters = 0.9f;
+        [Tooltip("Automatically release the lock after the arm has been undetected this long (seconds). " +
+                 "0 = never auto-unlock; the pose is held in world space until Unlock() is called " +
+                 "(UNLOCK ARM button / controller B).")]
+        [SerializeField] private float _autoUnlockAfterLostSeconds = 0f;
 
         [Header("Depth-based arm axis (bypasses keypoint regression)")]
         [Tooltip("When a depth raycaster is available, estimate the arm's 3D axis by sampling a grid " +
@@ -90,8 +108,27 @@ namespace ARArmDetection
             Debug.Log("[ArmManager] Arm detection mode is fixed to ARM-ONLY.");
         }
 
-        /// <summary>True while the tracker has a valid smoothed arm in world space.</summary>
-        public bool IsLocked => _hasSmoothedArmWorld && _stableArmLostFrames < _armOnlyLockLostFrames;
+        /// <summary>True while the tracker is locked onto a target arm (endpoints valid).
+        /// The lock is held through detection dropouts — the pose stays anchored in world
+        /// space — until Unlock() is called or the optional auto-unlock timer expires.</summary>
+        public bool IsLocked => _lockState == LockState.Locked && _hasSmoothedArmWorld;
+
+        /// <summary>Human-readable lock state for the HUD and the unlock button.</summary>
+        public string LockStatus { get; private set; } = "Searching";
+
+        /// <summary>
+        /// Releases the current target lock so a new arm can be acquired. Wired to the
+        /// UNLOCK ARM button (and controller B) for when the overlay grabbed the wrong target.
+        /// </summary>
+        public void Unlock()
+        {
+            _lockState = LockState.Searching;
+            _acquireFrameCount = 0;
+            _lockLostSeconds = 0f;
+            ResetArmStability();
+            LockStatus = "Searching (unlocked)";
+            Debug.Log("[ArmManager] Target lock released — searching for a new arm.");
+        }
 
         /// <summary>
         /// Returns the current smoothed shoulder and wrist world positions.
@@ -120,6 +157,12 @@ namespace ARArmDetection
             public Side Side;
         }
 
+        private enum LockState { Searching, Acquiring, Locked }
+
+        private LockState _lockState = LockState.Searching;
+        private int _acquireFrameCount;
+        private Vector3 _acquireMidWorld;
+        private float _lockLostSeconds;
         private bool _hasStableArmImage;
         private Side _stableArmSide;
         private Vector2 _stableArmMidpointImage;
@@ -127,7 +170,6 @@ namespace ARArmDetection
         private Vector3 _smoothedShoulderWorld;
         private Vector3 _smoothedWristWorld;
         private PersonDetection _stableArmDetection;
-        private int _stableArmLostFrames;
         private bool _currentDetectionsAreMediaPipe;
         private int _customDetectorFrameCounter;
         private readonly List<PersonDetection> _cachedCustomDetections = new();
@@ -183,6 +225,7 @@ namespace ARArmDetection
             int bboxPassCount = 0;
             int keypointPassCount = 0;
             int filterPassCount = 0;
+            int gateRejectCount = 0;
             int depthRaycastHits = 0;
 
             for (int i = 0; i < persons.Count; i++)
@@ -193,25 +236,64 @@ namespace ARArmDetection
                 bboxPassCount++;
 
                 float depth = EstimateDepth(p);
-                if (TryArm(p, Side.Left, depth, ref found, ref best, ref keypointPassCount, ref filterPassCount, ref depthRaycastHits))
+                if (TryArm(p, Side.Left, depth, ref found, ref best, ref keypointPassCount, ref filterPassCount, ref gateRejectCount, ref depthRaycastHits))
                 {
                     selectedIdx = i;
                     selectedSide = Side.Left;
                 }
-                if (TryArm(p, Side.Right, depth, ref found, ref best, ref keypointPassCount, ref filterPassCount, ref depthRaycastHits))
+                if (TryArm(p, Side.Right, depth, ref found, ref best, ref keypointPassCount, ref filterPassCount, ref gateRejectCount, ref depthRaycastHits))
                 {
                     selectedIdx = i;
                     selectedSide = Side.Right;
                 }
             }
 
-            if (found)
+            bool renderOverlay = false;
+            if (_lockState == LockState.Locked)
             {
-                StabilizeArmOnlyCandidate(ref best, selectedSide, selectedIdx);
+                if (found)
+                {
+                    _lockLostSeconds = 0f;
+                    StabilizeArmOnlyCandidate(ref best, selectedSide, selectedIdx);
+                    LockStatus = "Locked (tracking)";
+                    renderOverlay = true;
+                }
+                else
+                {
+                    _lockLostSeconds += Time.deltaTime;
+                    if (_autoUnlockAfterLostSeconds > 0f && _lockLostSeconds >= _autoUnlockAfterLostSeconds)
+                    {
+                        Unlock();
+                    }
+                    else
+                    {
+                        // Hold the last pose: it is anchored in world space, so it stays on
+                        // the (stationary) arm through dropouts and while the user walks around.
+                        UseHeldLockPose(ref found, ref best, ref selectedIdx, ref selectedSide);
+                        LockStatus = $"Locked (holding {_lockLostSeconds:F1}s, gate {CurrentLockGateRadius():F2} m)";
+                        renderOverlay = found;
+                    }
+                }
+            }
+            else if (found)
+            {
+                UpdateAcquisition(best);
+                if (_lockState == LockState.Locked)
+                {
+                    StabilizeArmOnlyCandidate(ref best, selectedSide, selectedIdx);
+                    LockStatus = "Locked (tracking)";
+                    renderOverlay = true;
+                }
+                else
+                {
+                    LockStatus = $"Acquiring {_acquireFrameCount}/{_acquireConsistentFrames}";
+                }
             }
             else
             {
-                TryUseLockedArmOnlyCandidate(ref found, ref best, ref selectedIdx, ref selectedSide);
+                _lockState = LockState.Searching;
+                _acquireFrameCount = 0;
+                LockStatus = "Searching";
             }
 
             SelectedDetectionIndex = found ? selectedIdx : -1;
@@ -241,13 +323,17 @@ namespace ARArmDetection
             {
                 LastArmStatus = "All arms blocked by WearerFilter";
             }
+            else if (gateRejectCount > 0)
+            {
+                LastArmStatus = $"{gateRejectCount} detection(s) outside lock gate (ignored)";
+            }
             else
             {
                 LastArmStatus = "No arm selected";
             }
 
             var camTransform = _cameraSource.CameraTransform;
-            _overlay.Render(found ? (best.Shoulder, best.Wrist) : null, camTransform);
+            _overlay.Render(renderOverlay ? (best.Shoulder, best.Wrist) : ((Vector3, Vector3)?)null, camTransform);
 
             LastFoundArm = found;
             _debugHUD?.ReportDetections(persons.Count, found ? 1 : 0);
@@ -344,7 +430,7 @@ namespace ARArmDetection
         private bool TryArm(PersonDetection p, Side side, float depthHeuristic,
                             ref bool found, ref ArmCandidate best,
                             ref int keypointPassCount, ref int filterPassCount,
-                            ref int depthRaycastHits)
+                            ref int gateRejectCount, ref int depthRaycastHits)
         {
             int shoulderIdx = side == Side.Left ? (int)CocoKeypoint.LeftShoulder : (int)CocoKeypoint.RightShoulder;
             int elbowIdx = side == Side.Left ? (int)CocoKeypoint.LeftElbow : (int)CocoKeypoint.RightElbow;
@@ -392,6 +478,28 @@ namespace ARArmDetection
                 shoulderWorld = ProjectImagePoint(arm.ShoulderImage, depthHeuristic, out bool _);
                 wristWorld = ProjectImagePoint(arm.WristImage, depthHeuristic, out bool wristHit);
                 if (wristHit) depthRaycastHits++;
+            }
+
+            // Keep endpoint order consistent with the tracked arm: the depth-axis PCA has a
+            // sign ambiguity, so its min/max endpoints can swap between frames and flip the
+            // model 180°. Align each candidate with the previous smoothed direction instead.
+            if (_hasSmoothedArmWorld &&
+                Vector3.Dot(wristWorld - shoulderWorld, _smoothedWristWorld - _smoothedShoulderWorld) < 0f)
+            {
+                (shoulderWorld, wristWorld) = (wristWorld, shoulderWorld);
+            }
+
+            // Hard gate while locked: a detection far from the locked arm is a DIFFERENT arm.
+            // Reject it outright so nothing can steal an existing lock, no matter its score.
+            if (_lockState == LockState.Locked && _hasSmoothedArmWorld)
+            {
+                Vector3 lockedMid = (_smoothedShoulderWorld + _smoothedWristWorld) * 0.5f;
+                Vector3 candidateMid = (shoulderWorld + wristWorld) * 0.5f;
+                if (Vector3.Distance(lockedMid, candidateMid) > CurrentLockGateRadius())
+                {
+                    gateRejectCount++;
+                    return false;
+                }
             }
 
             float effectiveDepth = Vector3.Distance(_cameraSource.CameraPose.position, wristWorld);
@@ -444,7 +552,6 @@ namespace ARArmDetection
 
             _stableArmSide = selectedSide;
             _hasStableArmImage = true;
-            _stableArmLostFrames = 0;
 
             if (!_hasSmoothedArmWorld)
             {
@@ -469,15 +576,12 @@ namespace ARArmDetection
             }
         }
 
-        private bool TryUseLockedArmOnlyCandidate(ref bool found, ref ArmCandidate best, ref int selectedIdx, ref Side selectedSide)
+        /// <summary>Reuses the smoothed world pose of the locked arm on frames where no
+        /// gated detection came in, keeping the overlay world-anchored on the target.</summary>
+        private void UseHeldLockPose(ref bool found, ref ArmCandidate best, ref int selectedIdx, ref Side selectedSide)
         {
-            if (!_hasStableArmImage || _stableArmLostFrames >= _armOnlyLockLostFrames)
-            {
-                ResetArmStability();
-                return false;
-            }
+            if (!_hasStableArmImage || !_hasSmoothedArmWorld) return;
 
-            _stableArmLostFrames++;
             LastDetections.Clear();
             LastDetections.Add(_stableArmDetection);
             selectedIdx = 0;
@@ -494,8 +598,35 @@ namespace ARArmDetection
                 Side = selectedSide,
             };
             found = true;
-            return true;
         }
+
+        /// <summary>Counts consecutive frames with a spatially consistent candidate and
+        /// promotes Searching → Acquiring → Locked once enough have been seen.</summary>
+        private void UpdateAcquisition(in ArmCandidate candidate)
+        {
+            Vector3 mid = (candidate.Shoulder + candidate.Wrist) * 0.5f;
+            bool continues = _acquireFrameCount > 0 &&
+                             Vector3.Distance(mid, _acquireMidWorld) <= _acquireRadiusMeters;
+            _acquireFrameCount = continues ? _acquireFrameCount + 1 : 1;
+            _acquireMidWorld = mid;
+
+            if (_acquireFrameCount >= _acquireConsistentFrames)
+            {
+                _lockState = LockState.Locked;
+                _lockLostSeconds = 0f;
+                Debug.Log($"[ArmManager] Target lock acquired at {mid} after {_acquireFrameCount} consistent frames.");
+            }
+            else
+            {
+                _lockState = LockState.Acquiring;
+            }
+        }
+
+        /// <summary>Gate radius for lock updates; grows while the arm is undetected so a
+        /// target that moved during a dropout can still be re-captured.</summary>
+        private float CurrentLockGateRadius() =>
+            Mathf.Min(_lockGateMaxRadiusMeters,
+                      _lockGateRadiusMeters + _lockLostSeconds * _lockGateGrowPerSecondLost);
 
         private static PersonDetection BuildSmoothedDetection(PersonDetection source, ArmCandidate arm, Side side)
         {
@@ -530,7 +661,6 @@ namespace ARArmDetection
         {
             _hasStableArmImage = false;
             _hasSmoothedArmWorld = false;
-            _stableArmLostFrames = 0;
             _hasStableFixedAxisDepth = false;
         }
 

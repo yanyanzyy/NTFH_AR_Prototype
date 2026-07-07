@@ -119,6 +119,37 @@ namespace ARArmDetection.EditorTools
             Selection.activeGameObject = go;
         }
 
+        /// <summary>
+        /// Adds the UNLOCK ARM button to an existing ArmDetectionPrototype scene.
+        /// Use this on scenes created before the target-lock feature existed.
+        /// </summary>
+        [MenuItem("Tools/AR Arm Detection/Add Arm Unlock Button")]
+        public static void AddArmUnlockButton()
+        {
+            var prototype = GameObject.Find("ArmDetectionPrototype");
+            if (prototype == null)
+            {
+                Debug.LogError("[ArmDetection] ArmDetectionPrototype not found. Add the prototype first.");
+                return;
+            }
+            if (prototype.GetComponentInChildren<ArmLockButton>() != null)
+            {
+                Debug.Log("[ArmDetection] ArmLockButton already present.");
+                return;
+            }
+
+            var manager = prototype.GetComponent<ArmDetectionManager>();
+            var go = new GameObject("ArmLockButton");
+            go.transform.SetParent(prototype.transform, false);
+            var lockButton = go.AddComponent<ArmLockButton>();
+            Undo.RegisterCreatedObjectUndo(go, "Add Arm Unlock Button");
+
+            if (manager != null) WireReference(lockButton, "_manager", manager);
+            EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            Selection.activeGameObject = go;
+            Debug.Log("[ArmDetection] Added ArmLockButton (UNLOCK ARM panel + controller B shortcut).");
+        }
+
         [MenuItem("Tools/AR Arm Detection/Add MediaPipe Hand Detector")]
         public static void AddMediaPipeHandDetector()
         {
@@ -224,6 +255,9 @@ namespace ARArmDetection.EditorTools
             var modeButtonGO = CreateChild(root, "ModeButton");
             var modeButton   = modeButtonGO.AddComponent<DetectionModeButton>();
 
+            var lockButtonGO = CreateChild(root, "ArmLockButton");
+            var lockButton   = lockButtonGO.AddComponent<ArmLockButton>();
+
             // ArmBoundingBoxDebug only draws geometry for the
             // *selected* arm (the one the manager picked and ArmOverlay renders).
             // While searching, no boxes appear — see ArmBoundingBoxDebug.cs.
@@ -247,6 +281,7 @@ namespace ARArmDetection.EditorTools
             WireReference(mediaPipeDetector, "_cameraSource", cameraSource);
             WireReference(mediaPipeBridge, "_target", mediaPipeDetector);
             WireReference(modeButton, "_manager",       manager);
+            WireReference(lockButton, "_manager",       manager);
             WireReference(bboxDebug,  "_manager",       manager);
             WireReference(bboxDebug,  "_cameraSource",  cameraSource);
 
