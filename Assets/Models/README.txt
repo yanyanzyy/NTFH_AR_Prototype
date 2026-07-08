@@ -1,24 +1,35 @@
-This folder holds the one model used by the app: the arm + needle POSE model,
-arm-needle-pose-320.onnx (produced by the Training/ pipeline).
+DEPLOYED MODEL: arm-pose-320.onnx  (arm_pose_v2 training run, 2026-07-07)
+Assigned to CustomArmDetector in ArmDetectionScene. Single class, 320x320 input.
 
-How it's produced (see Training/README.md for the full pipeline):
+  Input : [1, 3, 320, 320]   (CustomArmDetector reads the size from the ONNX
+                              itself, so the Inspector's Input Size can't break it)
+  Output: [1, 11, 2100] features-first
+    0..3   box cx, cy, w, h   (input-pixel scale, letterboxed 320x320)
+    4      arm score          (single class: 0 = arm)
+    5..10  keypoints          (kx0, ky0, v0, kx1, ky1, v1)
+           kpt0 = proximal (near elbow), kpt1 = distal (wrist)
+
+  KNOWN LIMITATION (arm_pose_v2): box detection is excellent (mAP50-95 ~0.93)
+  but the keypoint head is UNTRAINED (pose mAP ~0). Do not trust keypoint
+  outputs; the manager uses the fixed-world-axis fallback for arm orientation
+  and box size for depth. Fix by labeling real proximal/distal keypoints and
+  retraining (Training/README.md).
+
+  Preprocessing: frames must be LETTERBOXED (aspect-fit + gray pad), matching
+  Ultralytics train/val. CustomArmDetector does this; don't feed stretched frames.
+
+Produced by the Training/ pipeline (see Training/README.md):
 
   cd Training
-  python scripts/01_label.py            # label arm + needle keypoints
+  python scripts/01_label.py
   python scripts/02_prepare_dataset.py
-  python scripts/03_train.py
-  python scripts/04_export.py --weights runs/arm_needle_pose/weights/best.pt
+  python scripts/03_train.py --imgsz 320
+  python scripts/04_export.py --weights runs/<run>/weights/best.pt
 
-Unity imports it as a Sentis ModelAsset. Assign it to the "Model Asset" slot on
-the CustomArmDetector component (ArmDetectionScene) and set Input Size = 320.
+LEGACY MODELS (kept for reference; class orders CONFLICT — check before use):
+  arm-needle-pose-320.onnx / lucas.onnx : 320, [1,18,N], {0: arm, 1: needle}
+  best.onnx / best_v2.onnx              : 640, [1,18,N], {0: Syringe, 1: Arm}  (swapped!)
+  custom-arm-detector.onnx              : 640, [1,5,N], box-only
 
-Output layout, features-first [1, 12, N]:
-  0..3   box cx, cy, w, h        (input-pixel scale, 320x320)
-  4..5   class scores            (0 = arm, 1 = needle)
-  6..11  keypoints               (kx0, ky0, v0, kx1, ky1, v1)
-         arm:    kpt0 = proximal, kpt1 = distal
-         needle: kpt0 = tip,      kpt1 = hub
-
-custom-arm-detector.onnx is the PREVIOUS box-only model. It is kept only so the
-scene's Model Asset slot isn't broken before you swap in the pose model. Delete
-it once arm-needle-pose-320.onnx is assigned.
+When assigning a legacy 2-class model, set CustomArmDetector._armClassId to the
+arm's index in THAT model's convention (see table above).

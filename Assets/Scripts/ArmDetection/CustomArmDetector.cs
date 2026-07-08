@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using Unity.InferenceEngine;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace ARArmDetection
 {
@@ -21,6 +22,10 @@ namespace ARArmDetection
     /// score is read from channel 4 + _armClassId - so an older combined ONNX keeps
     /// working until the arm-only model is assigned.
     ///
+    /// Preprocessing: the input size is read from the ONNX itself (Inspector value is only a
+    /// fallback for dynamic models), and frames are letterboxed - aspect-fitted with gray
+    /// padding - to match Ultralytics train/val preprocessing exactly.
+    ///
     /// Quest 3 frame-rate strategy:
     ///  - inference is layer-sliced via Worker.ScheduleIterable, so each rendered
     ///    frame only dispatches _layersPerFrame layers of GPU work instead of the
@@ -35,6 +40,9 @@ namespace ARArmDetection
         [Header("Model")]
         [SerializeField] private ModelAsset _modelAsset;
         [SerializeField] private BackendType _backend = BackendType.GPUCompute;
+        [Tooltip("Only used when the model has a dynamic input shape. When the ONNX declares a " +
+                 "static input (all Ultralytics exports do), that size is used and this is ignored, " +
+                 "so swapping between 320/640 models can't silently break inference.")]
         [SerializeField] private int _inputSize = 320;
         [Tooltip("Quantize model weights to FP16 at load. Halves weight memory and is faster on the " +
                  "Quest GPU with no practical accuracy loss for this model.")]
@@ -67,6 +75,25 @@ namespace ARArmDetection
         private readonly List<PersonDetection> _detections = new();
         private string _lastOutputShape = "-";
 
+        // Actual model input size, read from the ONNX itself at load (falls back to _inputSize
+        // only for dynamic-shape models).
+        private int _tensorWidth;
+        private int _tensorHeight;
+
+        // Letterbox state. The model was trained with Ultralytics preprocessing, which fits the
+        // frame into the square input and pads with gray - stretching a 4:3 passthrough frame to
+        // 1:1 is out-of-distribution and measurably hurts detection.
+        private RenderTexture _letterboxSquare;   // model-input-sized, gray-padded
+        private RenderTexture _letterboxContent;  // aspect-fitted camera frame
+        private bool _letterboxUnsupportedWarned;
+
+        // Mapping from model input pixels back to source-image pixels, captured when the
+        // pending inference was scheduled (readback lands frames later).
+        private int _pendingPadX;
+        private int _pendingPadY;
+        private float _pendingInvFitX = 1f;
+        private float _pendingInvFitY = 1f;
+
         public bool IsReady => isActiveAndEnabled && _worker != null && _inputTensor != null;
         public bool LastRunConsumedNewResult { get; private set; }
         public bool LastRunScheduledInference { get; private set; }
@@ -93,6 +120,13 @@ namespace ARArmDetection
             _worker = null;
             _inputTensor?.Dispose();
             _inputTensor = null;
+            ReleaseLetterboxTextures();
+        }
+
+        private void ReleaseLetterboxTextures()
+        {
+            if (_letterboxSquare != null) { _letterboxSquare.Release(); _letterboxSquare = null; }
+            if (_letterboxContent != null) { _letterboxContent.Release(); _letterboxContent = null; }
         }
 
         public List<PersonDetection> Run(Texture source)
@@ -132,7 +166,7 @@ namespace ARArmDetection
                 }
 
                 // Start a new inference from the freshest camera frame.
-                TextureConverter.ToTensor(source, _inputTensor);
+                WriteLetterboxedInput(source);
                 _pendingImageWidth = source.width;
                 _pendingImageHeight = source.height;
                 LastRunScheduledInference = true;
@@ -163,6 +197,77 @@ namespace ARArmDetection
             }
 
             return _detections;
+        }
+
+        /// <summary>
+        /// Fills _inputTensor with an aspect-preserving letterbox of the camera frame: the
+        /// frame is fitted into the model's square input and the remainder padded with the
+        /// same gray Ultralytics uses in training (114/255). Orientation is preserved by
+        /// construction: a plain Blit fits the content and CopyTexture places it as raw
+        /// texels; the padding is centred, so no flip convention can offset it.
+        /// </summary>
+        private void WriteLetterboxedInput(Texture source)
+        {
+            if ((SystemInfo.copyTextureSupport & CopyTextureSupport.Basic) == 0)
+            {
+                // No GPU region-copy support (rare): fall back to the old stretch path.
+                if (!_letterboxUnsupportedWarned)
+                {
+                    _letterboxUnsupportedWarned = true;
+                    Debug.LogWarning("[CustomArmDetector] CopyTexture unsupported on this GPU; " +
+                                     "using stretched (non-letterboxed) model input.");
+                }
+                _pendingPadX = 0;
+                _pendingPadY = 0;
+                _pendingInvFitX = source.width / (float)_tensorWidth;
+                _pendingInvFitY = source.height / (float)_tensorHeight;
+                TextureConverter.ToTensor(source, _inputTensor);
+                return;
+            }
+
+            float fit = Mathf.Min(_tensorWidth / (float)source.width,
+                                  _tensorHeight / (float)source.height);
+            int contentW = Mathf.Clamp(Mathf.RoundToInt(source.width * fit), 1, _tensorWidth);
+            int contentH = Mathf.Clamp(Mathf.RoundToInt(source.height * fit), 1, _tensorHeight);
+            int padX = (_tensorWidth - contentW) / 2;
+            int padY = (_tensorHeight - contentH) / 2;
+
+            if (_letterboxSquare == null || !_letterboxSquare.IsCreated() ||
+                _letterboxSquare.width != _tensorWidth || _letterboxSquare.height != _tensorHeight)
+            {
+                if (_letterboxSquare != null) _letterboxSquare.Release();
+                _letterboxSquare = new RenderTexture(_tensorWidth, _tensorHeight, 0, RenderTextureFormat.ARGB32);
+                _letterboxSquare.Create();
+                ClearToUltralyticsGray(_letterboxSquare);
+            }
+            if (_letterboxContent == null || !_letterboxContent.IsCreated() ||
+                _letterboxContent.width != contentW || _letterboxContent.height != contentH)
+            {
+                if (_letterboxContent != null) _letterboxContent.Release();
+                _letterboxContent = new RenderTexture(contentW, contentH, 0, RenderTextureFormat.ARGB32);
+                _letterboxContent.Create();
+                // Content size changed: stale pixels from the previous content rect may
+                // remain in the square outside the new rect, so re-pad it.
+                ClearToUltralyticsGray(_letterboxSquare);
+            }
+
+            Graphics.Blit(source, _letterboxContent);
+            Graphics.CopyTexture(_letterboxContent, 0, 0, 0, 0, contentW, contentH,
+                                 _letterboxSquare, 0, 0, padX, padY);
+            TextureConverter.ToTensor(_letterboxSquare, _inputTensor);
+
+            _pendingPadX = padX;
+            _pendingPadY = padY;
+            _pendingInvFitX = source.width / (float)contentW;
+            _pendingInvFitY = source.height / (float)contentH;
+        }
+
+        private static void ClearToUltralyticsGray(RenderTexture rt)
+        {
+            var previous = RenderTexture.active;
+            RenderTexture.active = rt;
+            GL.Clear(false, true, new Color(114f / 255f, 114f / 255f, 114f / 255f, 1f));
+            RenderTexture.active = previous;
         }
 
         /// <summary>Dispatches up to _layersPerFrame layers. Returns true while layers remain.</summary>
@@ -265,11 +370,30 @@ namespace ARArmDetection
             }
 
             var model = ModelLoader.Load(_modelAsset);
+
+            // The ONNX's declared input size is authoritative - a scene serialized for a 640
+            // model silently breaks every inference when a 320 model is assigned (and vice
+            // versa), so never trust the Inspector value when the model states its own.
+            _tensorWidth = _inputSize;
+            _tensorHeight = _inputSize;
+            if (model.inputs.Count > 0 && model.inputs[0].shape.IsStatic())
+            {
+                var declared = model.inputs[0].shape.ToTensorShape();
+                if (declared.rank == 4 && declared[2] > 0 && declared[3] > 0)
+                {
+                    _tensorHeight = declared[2];
+                    _tensorWidth = declared[3];
+                    if (_tensorWidth != _inputSize || _tensorHeight != _inputSize)
+                        Debug.LogWarning($"[CustomArmDetector] _inputSize is {_inputSize} but the model " +
+                                         $"declares {_tensorWidth}x{_tensorHeight}; using the model's size.");
+                }
+            }
+
             if (_quantizeToFp16)
                 ModelQuantizer.QuantizeWeights(QuantizationType.Float16, ref model);
             _worker = new Worker(model, _backend);
-            _inputTensor = new Tensor<float>(new TensorShape(1, 3, _inputSize, _inputSize));
-            Status = "Model loaded";
+            _inputTensor = new Tensor<float>(new TensorShape(1, 3, _tensorHeight, _tensorWidth));
+            Status = $"Model loaded ({_tensorWidth}x{_tensorHeight})";
         }
 
         private void ParsePoseOutput(Tensor<float> output, int imageWidth, int imageHeight)
@@ -407,23 +531,27 @@ namespace ARArmDetection
             float kx = ReadFeature(data, shape, row, kptOffset + k * 3, featuresFirst);
             float ky = ReadFeature(data, shape, row, kptOffset + 1 + k * 3, featuresFirst);
             bool normalized = Mathf.Max(Mathf.Abs(kx), Mathf.Abs(ky)) <= 2f;
-            float scaleX = normalized ? imageWidth : imageWidth / (float)_inputSize;
-            float scaleY = normalized ? imageHeight : imageHeight / (float)_inputSize;
+            if (normalized) { kx *= _tensorWidth; ky *= _tensorHeight; }
             return new Vector2(
-                Mathf.Clamp(kx * scaleX, 0f, imageWidth),
-                Mathf.Clamp(ky * scaleY, 0f, imageHeight));
+                Mathf.Clamp((kx - _pendingPadX) * _pendingInvFitX, 0f, imageWidth),
+                Mathf.Clamp((ky - _pendingPadY) * _pendingInvFitY, 0f, imageHeight));
         }
 
         private Rect XywhToImageBounds(float cx, float cy, float w, float h, int imageWidth, int imageHeight)
         {
             bool normalized = Mathf.Max(Mathf.Abs(cx), Mathf.Abs(cy), Mathf.Abs(w), Mathf.Abs(h)) <= 2f;
-            float scaleX = normalized ? imageWidth : imageWidth / (float)_inputSize;
-            float scaleY = normalized ? imageHeight : imageHeight / (float)_inputSize;
+            if (normalized)
+            {
+                cx *= _tensorWidth; w *= _tensorWidth;
+                cy *= _tensorHeight; h *= _tensorHeight;
+            }
 
-            float width = Mathf.Abs(w) * scaleX;
-            float height = Mathf.Abs(h) * scaleY;
-            float centerX = cx * scaleX;
-            float centerY = cy * scaleY;
+            // Model coords live in the letterboxed input: remove the padding offset, then
+            // scale back to source pixels (sizes only scale - padding never offsets them).
+            float width = Mathf.Abs(w) * _pendingInvFitX;
+            float height = Mathf.Abs(h) * _pendingInvFitY;
+            float centerX = (cx - _pendingPadX) * _pendingInvFitX;
+            float centerY = (cy - _pendingPadY) * _pendingInvFitY;
 
             float xMin = Mathf.Clamp(centerX - width * 0.5f, 0f, imageWidth);
             float yMin = Mathf.Clamp(centerY - height * 0.5f, 0f, imageHeight);

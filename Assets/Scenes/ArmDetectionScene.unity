@@ -2647,12 +2647,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7ae13ebf3a440ce4c960e63a8c41ff56, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.CustomArmDetector
-  _modelAsset: {fileID: 5022602860645237092, guid: 63d0c4c19806b7642942e7b57ad84d36, type: 3}
+  _modelAsset: {fileID: 5022602860645237092, guid: 8c82bfed1b6abef459c24b4431d32a0c, type: 3}
   _backend: 256
-  _inputSize: 640
+  _inputSize: 320
   _quantizeToFp16: 0
   _layersPerFrame: 14
-  _confidenceThreshold: 0.03
+  _confidenceThreshold: 0.3
   _nmsIoUThreshold: 0.25
   _maxDetections: 5
   _armClassId: 1
@@ -2727,17 +2727,26 @@ MonoBehaviour:
   _useCustomArmDetector: 1
   _fallbackToMediaPipe: 0
   _depthRaycaster: {fileID: 615230029}
-  _assumedPersonHeightMeters: 1.7
+  _assumedArmLengthMeters: 0.5
   _minPersonBboxPixels: 10
   _minDepthMeters: 0.3
-  _maxDepthMeters: 8
+  _maxDepthMeters: 3
   _keypointConfidence: 0.01
   _skipWearerFilterInArmOnlyMode: 1
   _armOnlyStabilityRadiusPixels: 420
   _armOnlyImageSmoothing: 0.8
   _armOnlyWorldSmoothing: 0.9
-  _armOnlyLockLostFrames: 45
   _customDetectorEveryNFrames: 2
+  _acquireConsistentFrames: 4
+  _acquireRadiusMeters: 0.3
+  _acquireMinConfidence: 0.4
+  _acquireGapToleranceSeconds: 0.6
+  _lockGateRadiusMeters: 0.35
+  _lockGateGrowPerSecondLost: 0.25
+  _lockGateMaxRadiusMeters: 0.9
+  _autoUnlockAfterLostSeconds: 0
+  _freezeWhileLocked: 1
+  _lockRefineSeconds: 1.5
   _useDepthAxisEstimation: 0
   _depthSampleGrid: 6
   _swapDepthAxisEndpoints: 0
