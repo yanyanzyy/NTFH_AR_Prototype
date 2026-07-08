@@ -20,6 +20,11 @@ namespace ARArmDetection
         private int       _detectionCount;
         private int       _frameCount;
         private float     _lastRunTime;
+        private float     _nextTextRefresh;
+
+        // Rebuilding the rich-text block every frame allocates a large string AND forces a
+        // Canvas mesh rebuild each frame; 4 Hz is plenty for a diagnostic readout.
+        private const float TextRefreshInterval = 0.25f;
 
         // Called by ArmDetectionManager each frame it runs inference.
         public void ReportDetections(int personCount, int armCount)
@@ -45,6 +50,9 @@ namespace ARArmDetection
                 transform.position = cam.transform.position + cam.transform.forward * _distanceMeters;
                 transform.rotation = cam.transform.rotation;
             }
+
+            if (Time.unscaledTime < _nextTextRefresh) return;
+            _nextTextRefresh = Time.unscaledTime + TextRefreshInterval;
 
             bool hasFrame   = _cameraSource != null && _cameraSource.HasFrame;
             bool mediaPipeReady = _mediaPipeDetector != null && _mediaPipeDetector.IsReady;

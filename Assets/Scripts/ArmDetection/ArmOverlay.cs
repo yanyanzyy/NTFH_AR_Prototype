@@ -69,6 +69,7 @@ namespace ARArmDetection
         private Transform _model;
         private Transform _quad;
         private Material  _quadMaterial;
+        private float     _nextShortArmWarning;
 
         // ── Unity lifecycle ────────────────────────────────────────────────────────────
 
@@ -126,9 +127,15 @@ namespace ARArmDetection
             {
                 if (!_forceVisible)
                 {
-                    Debug.LogWarning($"[ArmOverlay] Arm too short ({length:F3} m) — overlay hidden. " +
-                                     $"Shoulder={shoulder} Wrist={wrist}. " +
-                                     "Enable _forceVisible on ArmOverlay to override.");
+                    // Throttled: this can trip every frame while a degenerate detection is
+                    // held, and per-frame logging (string alloc + logcat I/O) tanks Quest FPS.
+                    if (Time.unscaledTime >= _nextShortArmWarning)
+                    {
+                        _nextShortArmWarning = Time.unscaledTime + 5f;
+                        Debug.LogWarning($"[ArmOverlay] Arm too short ({length:F3} m) — overlay hidden. " +
+                                         $"Shoulder={shoulder} Wrist={wrist}. " +
+                                         "Enable _forceVisible on ArmOverlay to override.");
+                    }
                     SetVisible(false);
                     return;
                 }

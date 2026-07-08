@@ -33,9 +33,13 @@ namespace ARArmDetection
         private Text _label;
         private DetectionModeButton _statusPanel;
         private bool _grouped;
+        private bool _lastLocked;
+        private string _lastStatus;
+        private float _nextTextRefresh;
 
         private static readonly Color LockedColor    = new Color(0.72f, 0.16f, 0.16f, 0.92f);
         private static readonly Color SearchingColor = new Color(0.24f, 0.27f, 0.31f, 0.92f);
+        private const float TextRefreshInterval = 0.25f;
 
         private void Awake()
         {
@@ -48,6 +52,11 @@ namespace ARArmDetection
         {
             if (_unlockWithControllerB && OVRInput.GetDown(OVRInput.RawButton.B))
                 ReleaseLock();
+
+            // Throttled: the lock status string changes near-continuously while holding or
+            // refining, and rebuilding the label every frame allocates + rebuilds the Canvas.
+            if (Time.unscaledTime < _nextTextRefresh) return;
+            _nextTextRefresh = Time.unscaledTime + TextRefreshInterval;
             RefreshVisuals();
         }
 
@@ -63,12 +72,16 @@ namespace ARArmDetection
         private void RefreshVisuals()
         {
             bool locked = _manager != null && _manager.IsLocked;
+            string status = _manager != null ? _manager.LockStatus : "Manager not assigned";
+            if (locked == _lastLocked && status == _lastStatus) return;
+            _lastLocked = locked;
+            _lastStatus = status;
+
             if (_background != null)
                 _background.color = locked ? LockedColor : SearchingColor;
 
             if (_label != null)
             {
-                string status = _manager != null ? _manager.LockStatus : "Manager not assigned";
                 _label.text = locked
                     ? $"<b>UNLOCK ARM</b>\n<size=13>{status} — tap or press B</size>"
                     : $"<b>ARM LOCK</b>\n<size=13>{status}</size>";

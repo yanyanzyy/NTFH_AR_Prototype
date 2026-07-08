@@ -2705,7 +2705,7 @@ MonoBehaviour:
   _backend: 256
   _inputSize: 320
   _quantizeToFp16: 0
-  _layersPerFrame: 14
+  _layersPerFrame: 8
   _confidenceThreshold: 0.3
   _nmsIoUThreshold: 0.25
   _maxDetections: 5
@@ -2794,7 +2794,7 @@ MonoBehaviour:
   _armOnlyStabilityRadiusPixels: 420
   _armOnlyImageSmoothing: 0.8
   _armOnlyWorldSmoothing: 0.9
-  _customDetectorEveryNFrames: 2
+  _customDetectorEveryNFrames: 1
   _acquireConsistentFrames: 4
   _acquireRadiusMeters: 0.3
   _acquireMinConfidence: 0.4

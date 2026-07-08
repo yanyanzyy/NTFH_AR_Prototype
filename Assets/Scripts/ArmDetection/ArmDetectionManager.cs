@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Reflection;
 using Meta.XR;
 using UnityEngine;
 
@@ -33,6 +34,17 @@ namespace ARArmDetection
         [Tooltip("Seconds without a fresh needle detection before TryGetNeedleTip reports lost. " +
                  "Bridges the gap between completed inferences (the model only finishes every few frames).")]
         [SerializeField] private float _needleLostAfterSeconds = 0.75f;
+        [Header("MediaPipe pipeline lifecycle")]
+        [Tooltip("Manage the heavyweight MediaPipe HandLandmarkerRunner automatically. The runner " +
+                 "opens its own camera stream, does a full-frame GPU readback every frame and runs " +
+                 "CPU inference, so it is kept OFF while its results would not be consumed (custom " +
+                 "detector active and fallback unused) and started/paused on demand.")]
+        [SerializeField] private bool _manageMediaPipeLifecycle = true;
+        [Tooltip("Seconds the custom detector must be starved (usable but zero detections) before " +
+                 "the MediaPipe fallback pipeline is started or resumed.")]
+        [SerializeField] private float _mediaPipeActivateAfterSeconds = 2f;
+        [Tooltip("Seconds of sustained custom detections before the MediaPipe pipeline is paused again.")]
+        [SerializeField] private float _mediaPipePauseAfterSeconds = 2f;
 
         [Header("Depth estimation")]
         [SerializeField] private EnvironmentRaycastManager _depthRaycaster;
@@ -244,6 +256,27 @@ namespace ARArmDetection
         private Vector3 _smoothedNeedleTipWorld;
         private Vector3 _smoothedNeedleHubWorld;
         private float _needleLastSeenTime;
+        // Scratch buffers + per-frame result cache for TryEstimateArmAxisFromDepth, so the
+        // grid raycasts are never repeated for the same box within a frame and the hot path
+        // allocates nothing.
+        private readonly List<Vector3> _axisHits = new();
+        private readonly List<float> _axisDepths = new();
+        private readonly List<Vector3> _axisFilteredPoints = new();
+        private int _axisCacheFrame = -1;
+        private Rect _axisCacheBounds;
+        private bool _axisCacheResult;
+        private Vector3 _axisCacheEndA;
+        private Vector3 _axisCacheEndB;
+
+        // MediaPipe runner lifecycle (found by type name so there is no compile-time
+        // dependency on the MediaPipe sample assembly, mirroring MediaPipeHomulerBridge).
+        private Behaviour _mediaPipeRunner;
+        private MethodInfo _mediaPipeRunnerPause;
+        private MethodInfo _mediaPipeRunnerResume;
+        private bool _mediaPipeRunnerStarted;
+        private bool _mediaPipeRunnerPaused;
+        private float _mediaPipeStarvedSeconds;
+        private float _mediaPipeFedSeconds;
 
         private void Reset()
         {
@@ -252,6 +285,27 @@ namespace ARArmDetection
             _mediaPipeDetector = GetComponentInChildren<MediaPipeHandArmDetector>();
             _wearerFilter = GetComponentInChildren<WearerHandFilter>();
             _overlay = GetComponentInChildren<ArmOverlay>();
+        }
+
+        private void Awake()
+        {
+            if (!_manageMediaPipeLifecycle) return;
+
+            // Locate the homuler HandLandmarkerRunner and disable it BEFORE its Start() runs
+            // (every Awake executes before any Start), so the MediaPipe pipeline — its own
+            // camera stream, per-frame readbacks and CPU inference — does not auto-play.
+            // Unity defers Start() until a component is first enabled, so enabling the runner
+            // later boots the pipeline through exactly the same code path as at scene load.
+            foreach (var mb in FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (mb == null || mb.GetType().Name != "HandLandmarkerRunner") continue;
+                _mediaPipeRunner = mb;
+                _mediaPipeRunnerPause = mb.GetType().GetMethod("Pause");
+                _mediaPipeRunnerResume = mb.GetType().GetMethod("Resume");
+                mb.enabled = false;
+                Debug.Log("[ArmManager] MediaPipe HandLandmarkerRunner found - deferred until its results are needed.");
+                break;
+            }
         }
 
         private void Start()
@@ -277,6 +331,9 @@ namespace ARArmDetection
             if (_customArmDetector == null && _mediaPipeDetector == null) { ManagerStatus = "ERR: No detector assigned"; return; }
             if (_overlay == null) { ManagerStatus = "ERR: Overlay not assigned"; return; }
             if (!_cameraSource.HasFrame) { ManagerStatus = "Waiting: no camera frame"; return; }
+
+            UpdateMediaPipeLifecycle();
+
             if (!HasReadyDetector()) { ManagerStatus = "Waiting: detector not ready"; return; }
 
             _currentDetectionsAreMediaPipe = false;
@@ -296,6 +353,14 @@ namespace ARArmDetection
             int gateRejectCount = 0;
             int depthRaycastHits = 0;
 
+            // The custom detector fills the Left and Right keypoint slots with IDENTICAL data
+            // (see CustomArmDetector.ToPersonDetection), so evaluating the Right side can only
+            // change the outcome when the continuity bonus keys on a previously selected Right
+            // side. Skipping the duplicate halves the per-candidate work (and, when depth-axis
+            // estimation is enabled, its raycasts) without changing the selected result.
+            bool sidesIdentical = !_currentDetectionsAreMediaPipe;
+            bool evaluateRight = !sidesIdentical || (_hasStableArmImage && _stableArmSide == Side.Right);
+
             for (int i = 0; i < persons.Count; i++)
             {
                 var p = persons[i];
@@ -309,7 +374,8 @@ namespace ARArmDetection
                     selectedIdx = i;
                     selectedSide = Side.Left;
                 }
-                if (TryArm(p, Side.Right, depth, ref found, ref best, ref keypointPassCount, ref filterPassCount, ref gateRejectCount, ref depthRaycastHits))
+                if (evaluateRight &&
+                    TryArm(p, Side.Right, depth, ref found, ref best, ref keypointPassCount, ref filterPassCount, ref gateRejectCount, ref depthRaycastHits))
                 {
                     selectedIdx = i;
                     selectedSide = Side.Right;
@@ -482,6 +548,69 @@ namespace ARArmDetection
 
         public float GetEstimatedDepth(PersonDetection p) => EstimateDepth(p);
 
+        /// <summary>
+        /// Starts / pauses the MediaPipe pipeline so it only costs anything while its output
+        /// can actually be consumed by RunPrimaryDetector:
+        ///   - custom detector unusable  -> MediaPipe is the only detector, run it;
+        ///   - fallback disabled          -> results would be thrown away, keep it off;
+        ///   - fallback enabled           -> run only after the custom detector has been starved
+        ///                                  for a while, pause again once it recovers.
+        /// While the target lock is frozen every detection is ignored anyway, so the pipeline
+        /// is not woken up during a frozen lock.
+        /// </summary>
+        private void UpdateMediaPipeLifecycle()
+        {
+            if (!_manageMediaPipeLifecycle || _mediaPipeRunner == null ||
+                _mediaPipeDetector == null || !_mediaPipeDetector.isActiveAndEnabled) return;
+
+            bool customUsable = _useCustomArmDetector && _customArmDetector != null && _customArmDetector.IsReady;
+            bool resultsUsable = !customUsable || _fallbackToMediaPipe;
+            bool lockFrozen = _lockState == LockState.Locked && _freezeWhileLocked &&
+                              Time.time - _lockAcquiredTime >= _lockRefineSeconds;
+            bool starving = (!customUsable || _cachedCustomDetections.Count == 0) && !lockFrozen;
+
+            if (resultsUsable && starving)
+            {
+                _mediaPipeFedSeconds = 0f;
+                _mediaPipeStarvedSeconds += Time.deltaTime;
+                if (_mediaPipeStarvedSeconds >= _mediaPipeActivateAfterSeconds)
+                    SetMediaPipeRunning(true);
+            }
+            else
+            {
+                _mediaPipeStarvedSeconds = 0f;
+                _mediaPipeFedSeconds += Time.deltaTime;
+                if (!resultsUsable || _mediaPipeFedSeconds >= _mediaPipePauseAfterSeconds)
+                    SetMediaPipeRunning(false);
+            }
+        }
+
+        private void SetMediaPipeRunning(bool run)
+        {
+            if (run)
+            {
+                if (!_mediaPipeRunnerStarted)
+                {
+                    _mediaPipeRunner.enabled = true;   // fires the runner's deferred Start() -> bootstrap -> Play()
+                    _mediaPipeRunnerStarted = true;
+                    _mediaPipeRunnerPaused = false;
+                    Debug.Log("[ArmManager] MediaPipe fallback pipeline started.");
+                }
+                else if (_mediaPipeRunnerPaused)
+                {
+                    _mediaPipeRunnerResume?.Invoke(_mediaPipeRunner, null);
+                    _mediaPipeRunnerPaused = false;
+                    Debug.Log("[ArmManager] MediaPipe fallback pipeline resumed.");
+                }
+            }
+            else if (_mediaPipeRunnerStarted && !_mediaPipeRunnerPaused)
+            {
+                _mediaPipeRunnerPause?.Invoke(_mediaPipeRunner, null);
+                _mediaPipeRunnerPaused = true;
+                Debug.Log("[ArmManager] MediaPipe fallback pipeline paused (custom detector active).");
+            }
+        }
+
         private bool HasReadyDetector()
         {
             bool customReady = _useCustomArmDetector && _customArmDetector != null && _customArmDetector.IsReady;
@@ -546,24 +675,26 @@ namespace ARArmDetection
             return Mathf.Clamp(depth, _minDepthMeters, _maxDepthMeters);
         }
 
+        private static readonly (int Shoulder, int Wrist)[] ArmKeypointPairs =
+        {
+            ((int)CocoKeypoint.LeftShoulder, (int)CocoKeypoint.LeftWrist),
+            ((int)CocoKeypoint.RightShoulder, (int)CocoKeypoint.RightWrist),
+        };
+
         private float EstimateDepthFromArmLength(PersonDetection p, float focalPx)
         {
             float bestConf = 0f;
             Vector2 bestShoulder = default;
             Vector2 bestWrist = default;
 
-            foreach (var pair in new[]
+            foreach (var pair in ArmKeypointPairs)
             {
-                ((int)CocoKeypoint.LeftShoulder, (int)CocoKeypoint.LeftWrist),
-                ((int)CocoKeypoint.RightShoulder, (int)CocoKeypoint.RightWrist),
-            })
-            {
-                float conf = Mathf.Min(p.Keypoints[pair.Item1].Confidence, p.Keypoints[pair.Item2].Confidence);
+                float conf = Mathf.Min(p.Keypoints[pair.Shoulder].Confidence, p.Keypoints[pair.Wrist].Confidence);
                 if (conf > bestConf)
                 {
                     bestConf = conf;
-                    bestShoulder = p.Keypoints[pair.Item1].ImagePos;
-                    bestWrist = p.Keypoints[pair.Item2].ImagePos;
+                    bestShoulder = p.Keypoints[pair.Shoulder].ImagePos;
+                    bestWrist = p.Keypoints[pair.Wrist].ImagePos;
                 }
             }
 
@@ -932,13 +1063,26 @@ namespace ARArmDetection
                 return false;
             }
 
+            // Same box already estimated this frame (e.g. the Right-side pass of the same
+            // detection): reuse the result instead of re-raycasting the whole grid.
+            if (_axisCacheFrame == Time.frameCount && _axisCacheBounds == imageBounds)
+            {
+                endA = _axisCacheEndA;
+                endB = _axisCacheEndB;
+                return _axisCacheResult;
+            }
+            _axisCacheFrame = Time.frameCount;
+            _axisCacheBounds = imageBounds;
+            _axisCacheResult = false;
+
             int grid = _depthSampleGrid;
             // Shrink sampling inward from the box edges so background pixels (where the box
             // slightly overshoots the real arm silhouette) don't get raycasted.
             float padX = imageBounds.width * 0.1f;
             float padY = imageBounds.height * 0.1f;
 
-            var hits = new List<Vector3>(grid * grid);
+            var hits = _axisHits;
+            hits.Clear();
             for (int gx = 0; gx < grid; gx++)
             {
                 float u = grid > 1 ? gx / (float)(grid - 1) : 0.5f;
@@ -964,12 +1108,14 @@ namespace ARArmDetection
             // Outlier rejection: keep points near the median depth so any background pixels
             // that slipped through don't skew the axis away from the true arm surface.
             Vector3 camPos = _cameraSource.CameraPose.position;
-            var depths = new List<float>(hits.Count);
+            var depths = _axisDepths;
+            depths.Clear();
             foreach (var h in hits) depths.Add(Vector3.Distance(camPos, h));
             depths.Sort();
             float medianDepth = depths[depths.Count / 2];
 
-            var filtered = new List<Vector3>(hits.Count);
+            var filtered = _axisFilteredPoints;
+            filtered.Clear();
             foreach (var h in hits)
                 if (Mathf.Abs(Vector3.Distance(camPos, h) - medianDepth) < 0.15f)
                     filtered.Add(h);
@@ -1000,6 +1146,9 @@ namespace ARArmDetection
 
             endA = _swapDepthAxisEndpoints ? maxPt : minPt;
             endB = _swapDepthAxisEndpoints ? minPt : maxPt;
+            _axisCacheResult = true;
+            _axisCacheEndA = endA;
+            _axisCacheEndB = endB;
             DepthAxisStatus = $"OK - {filtered.Count}/{hits.Count} samples, axis length {Vector3.Distance(endA, endB):F2} m";
             return true;
         }

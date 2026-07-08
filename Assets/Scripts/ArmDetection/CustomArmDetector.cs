@@ -73,6 +73,7 @@ namespace ARArmDetection
         private int _pendingImageHeight;
         private readonly List<PoseCandidate> _candidates = new();
         private readonly List<PersonDetection> _detections = new();
+        private readonly List<Rect> _nmsKeptBounds = new();
         private string _lastOutputShape = "-";
 
         // Actual model input size, read from the ONNX itself at load (falls back to _inputSize
@@ -158,7 +159,9 @@ namespace ARArmDetection
                 {
                     if (AdvanceSchedule())
                     {
-                        Status = $"dispatching layers; using {_detections.Count} cached arm(s)";
+                        // Constant string: this runs every frame while an inference is in
+                        // flight, so avoid re-formatting (and re-allocating) the status text.
+                        Status = "dispatching layers; serving cached arms";
                         return _detections;
                     }
                     BeginReadback();
@@ -310,7 +313,7 @@ namespace ARArmDetection
 
             if (!_pendingOutput.IsReadbackRequestDone())
             {
-                Status = $"readback pending; using {_detections.Count} cached arm(s)";
+                Status = "readback pending; serving cached arms";
                 return;
             }
 
@@ -404,7 +407,10 @@ namespace ARArmDetection
 
             var shape = output.shape;
             _lastOutputShape = shape.ToString();
-            var data = output.DownloadToArray();
+            // The tensor is already a CPU clone (ReadbackAndClone), so read it in place —
+            // DownloadToArray would copy the whole ~370 KB output into a fresh managed array
+            // every inference and feed the GC for nothing.
+            ReadOnlySpan<float> data = output.AsReadOnlySpan();
 
             if (!TryGetYoloLayout(shape, out int rows, out int features, out bool featuresFirst))
             {
@@ -457,7 +463,8 @@ namespace ARArmDetection
 
             _candidates.Sort((a, b) => b.Score.CompareTo(a.Score));
 
-            var keptBounds = new List<Rect>();
+            var keptBounds = _nmsKeptBounds;
+            keptBounds.Clear();
             for (int i = 0; i < _candidates.Count && _detections.Count < _maxDetections; i++)
             {
                 var c = _candidates[i];
@@ -511,7 +518,7 @@ namespace ARArmDetection
             return false;
         }
 
-        private float ReadFeature(float[] data, TensorShape shape, int row, int feature, bool featuresFirst)
+        private float ReadFeature(ReadOnlySpan<float> data, TensorShape shape, int row, int feature, bool featuresFirst)
         {
             if (shape.rank == 3)
             {
@@ -525,7 +532,7 @@ namespace ARArmDetection
             return featuresFirst ? data[feature * rows2 + row] : data[row * features2 + feature];
         }
 
-        private Vector2 ReadKeypoint(float[] data, TensorShape shape, int row, int kptOffset, int k,
+        private Vector2 ReadKeypoint(ReadOnlySpan<float> data, TensorShape shape, int row, int kptOffset, int k,
                                      bool featuresFirst, int imageWidth, int imageHeight)
         {
             float kx = ReadFeature(data, shape, row, kptOffset + k * 3, featuresFirst);

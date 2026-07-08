@@ -19,27 +19,34 @@ namespace ARArmDetection
 
         private Image _background;
         private Text _label;
+        private string _lastStatus;
+        private float _nextTextRefresh;
 
         private static readonly Color PanelColor = new Color(0.90f, 0.45f, 0.05f, 0.92f);
+        private const float TextRefreshInterval = 0.25f;
 
         private void Awake() => BuildUI();
 
         private void Update()
         {
             FollowCamera();
+
+            // Text updates are throttled and change-gated: a fresh string every frame both
+            // allocates and forces a Canvas rebuild. The background colour is constant and
+            // set once in BuildUI.
+            if (Time.unscaledTime < _nextTextRefresh) return;
+            _nextTextRefresh = Time.unscaledTime + TextRefreshInterval;
             RefreshVisuals();
         }
 
         private void RefreshVisuals()
         {
-            if (_background != null)
-                _background.color = PanelColor;
+            if (_label == null) return;
 
-            if (_label != null)
-            {
-                string status = _manager != null ? _manager.ManagerStatus : "Manager not assigned";
-                _label.text = $"<b>ARM DETECTION</b>\n<size=14>{status}</size>";
-            }
+            string status = _manager != null ? _manager.ManagerStatus : "Manager not assigned";
+            if (status == _lastStatus) return;
+            _lastStatus = status;
+            _label.text = $"<b>ARM DETECTION</b>\n<size=14>{status}</size>";
         }
 
         private void FollowCamera()
