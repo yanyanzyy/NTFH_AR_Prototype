@@ -150,6 +150,51 @@ namespace ARArmDetection.EditorTools
             Debug.Log("[ArmDetection] Added ArmLockButton (UNLOCK ARM panel + controller B shortcut).");
         }
 
+        /// <summary>
+        /// Adds the vision NeedleDetector to an existing ArmDetectionPrototype scene:
+        /// creates the child GameObject, wires ArmDetectionManager._needleDetector, and
+        /// assigns the trained needle model (arm-needle-pose-320.onnx) to its Model Asset.
+        /// </summary>
+        [MenuItem("Tools/AR Arm Detection/Add Needle Detector")]
+        public static void AddNeedleDetector()
+        {
+            var prototype = GameObject.Find("ArmDetectionPrototype");
+            if (prototype == null)
+            {
+                Debug.LogError("[ArmDetection] ArmDetectionPrototype not found. Add the prototype first.");
+                return;
+            }
+            if (prototype.GetComponentInChildren<NeedleDetector>() != null)
+            {
+                Debug.Log("[ArmDetection] NeedleDetector already present.");
+                return;
+            }
+
+            var manager = prototype.GetComponent<ArmDetectionManager>();
+            var go = new GameObject("NeedleDetector");
+            go.transform.SetParent(prototype.transform, false);
+            var detector = go.AddComponent<NeedleDetector>();
+            Undo.RegisterCreatedObjectUndo(go, "Add Needle Detector");
+
+            if (manager != null) WireReference(manager, "_needleDetector", detector);
+
+            var model = AssetDatabase.LoadAssetAtPath<Unity.InferenceEngine.ModelAsset>(
+                "Assets/Models/arm-needle-pose-320.onnx");
+            if (model != null)
+            {
+                WireReference(detector, "_modelAsset", model);
+                Debug.Log("[ArmDetection] Added NeedleDetector with arm-needle-pose-320.onnx assigned.");
+            }
+            else
+            {
+                Debug.LogWarning("[ArmDetection] Added NeedleDetector, but Assets/Models/arm-needle-pose-320.onnx " +
+                                 "was not found — assign your needle ONNX to its Model Asset slot manually.");
+            }
+
+            EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            Selection.activeGameObject = go;
+        }
+
         [MenuItem("Tools/AR Arm Detection/Add MediaPipe Hand Detector")]
         public static void AddMediaPipeHandDetector()
         {
@@ -252,6 +297,12 @@ namespace ARArmDetection.EditorTools
             var overlayGO = CreateChild(root, "Overlay");
             var overlay   = overlayGO.AddComponent<ArmOverlay>();
 
+            var needleGO = CreateChild(root, "NeedleDetector");
+            var needleDetector = needleGO.AddComponent<NeedleDetector>();
+            var needleModel = AssetDatabase.LoadAssetAtPath<Unity.InferenceEngine.ModelAsset>(
+                "Assets/Models/arm-needle-pose-320.onnx");
+            if (needleModel != null) WireReference(needleDetector, "_modelAsset", needleModel);
+
             var modeButtonGO = CreateChild(root, "ModeButton");
             var modeButton   = modeButtonGO.AddComponent<DetectionModeButton>();
 
@@ -274,6 +325,7 @@ namespace ARArmDetection.EditorTools
             var manager = root.AddComponent<ArmDetectionManager>();
 
             WireReference(manager,    "_cameraSource",  cameraSource);
+            WireReference(manager,    "_needleDetector", needleDetector);
             WireReference(manager,    "_mediaPipeDetector", mediaPipeDetector);
             WireReference(manager,    "_wearerFilter",  filter);
             WireReference(manager,    "_overlay",       overlay);

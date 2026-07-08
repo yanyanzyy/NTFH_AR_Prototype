@@ -2081,6 +2081,58 @@ Transform:
   m_Children: []
   m_Father: {fileID: 2062675445}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1593298065
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1593298067}
+  - component: {fileID: 1593298066}
+  m_Layer: 0
+  m_Name: NeedleDetector
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1593298066
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1593298065}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 967b15873a7451b40bef84d43bd1704b, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.NeedleDetector
+  _modelAsset: {fileID: 5022602860645237092, guid: 40f7a5eff729c5742b7213fc0dc1f306, type: 3}
+  _backend: 256
+  _inputSize: 320
+  _quantizeToFp16: 1
+  _numClasses: 2
+  _needleClassId: 1
+  _layersPerFrame: 14
+  _confidenceThreshold: 0.4
+--- !u!4 &1593298067
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1593298065}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 2062675445}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1645367841
 GameObject:
   m_ObjectHideFlags: 0
@@ -2292,6 +2344,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.InjectionSiteDetector
   _armManager: {fileID: 2062675444}
+  _useVisionNeedle: 1
+  _useHandFallback: 1
   _rightHandSkeleton: {fileID: 426222574}
   _armRadiusMeters: 0.0425
   _approachRadiusMeters: 0.07
@@ -2726,6 +2780,10 @@ MonoBehaviour:
   _overlay: {fileID: 1511012891}
   _useCustomArmDetector: 1
   _fallbackToMediaPipe: 0
+  _needleDetector: {fileID: 1593298066}
+  _runNeedleOnlyWhileLocked: 1
+  _needleWorldSmoothing: 0.5
+  _needleLostAfterSeconds: 0.75
   _depthRaycaster: {fileID: 615230029}
   _assumedArmLengthMeters: 0.5
   _minPersonBboxPixels: 10
@@ -2783,6 +2841,7 @@ Transform:
   - {fileID: 2000764472}
   - {fileID: 1229135957}
   - {fileID: 1668819004}
+  - {fileID: 1593298067}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &2115017468

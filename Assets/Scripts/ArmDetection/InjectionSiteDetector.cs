@@ -7,9 +7,11 @@ namespace ARArmDetection
     /// Detects when the needle tip is close to the mannequin arm surface and fires
     /// events with the projected injection site in world space.
     ///
-    /// The needle tip comes from OVR hand tracking: the right-hand index fingertip is
-    /// used as a proxy for the tip (within ~3 cm of the insertion point in a standard
-    /// IV grip). The vision model only detects the arm.
+    /// The needle tip comes from the trained needle model (via
+    /// <see cref="ArmDetectionManager.TryGetNeedleTip"/>) when a NeedleDetector is wired
+    /// into the manager. When the vision needle isn't detected, the OVR right-hand index
+    /// fingertip is used as a proxy for the tip (within ~3 cm of the insertion point in
+    /// a standard IV grip).
     ///
     /// SETUP:
     ///   Drag the ArmDetectionManager into _armManager and the OVRSkeleton of the
@@ -20,7 +22,11 @@ namespace ARArmDetection
     {
         [SerializeField] private ArmDetectionManager _armManager;
 
-        [Header("Needle-tip source (hand tracking)")]
+        [Header("Needle-tip source")]
+        [Tooltip("Prefer the trained needle model's tip (ArmDetectionManager.TryGetNeedleTip).")]
+        [SerializeField] private bool _useVisionNeedle = true;
+        [Tooltip("Fall back to the OVR right-hand index fingertip when the vision needle isn't detected.")]
+        [SerializeField] private bool _useHandFallback = true;
         [Tooltip("OVRSkeleton component on the nurse's right hand (from the Hand Tracking building block).")]
         [SerializeField] private OVRSkeleton _rightHandSkeleton;
 
@@ -94,15 +100,22 @@ namespace ARArmDetection
         // ── Helpers ───────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Resolves the needle tip from the OVR right-hand index fingertip.
+        /// Resolves the needle tip: vision needle model first, then the OVR right-hand
+        /// index fingertip as fallback.
         /// </summary>
         private bool TryGetNeedleTip(out Vector3 tip)
         {
-            if (_indexTipBone == null) TryResolveBone();
-            if (_indexTipBone != null)
-            {
-                tip = _indexTipBone.position;
+            if (_useVisionNeedle && _armManager != null && _armManager.TryGetNeedleTip(out tip))
                 return true;
+
+            if (_useHandFallback)
+            {
+                if (_indexTipBone == null) TryResolveBone();
+                if (_indexTipBone != null)
+                {
+                    tip = _indexTipBone.position;
+                    return true;
+                }
             }
 
             tip = default;

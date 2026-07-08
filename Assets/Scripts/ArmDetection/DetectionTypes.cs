@@ -38,4 +38,12 @@ namespace ARArmDetection
         public Vector2 WristImage;
         public float Confidence;
     }
+
+    public struct NeedleDetection
+    {
+        public Rect ImageBounds;
+        public float Confidence;
+        public Vector2 TipImage;   // kpt0 = tip (contact point)
+        public Vector2 HubImage;   // last kpt = hub/plunger
+    }
 }

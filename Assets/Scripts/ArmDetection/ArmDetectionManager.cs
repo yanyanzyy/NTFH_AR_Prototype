@@ -20,6 +20,20 @@ namespace ARArmDetection
         [Tooltip("If the custom detector finds no arm, use MediaPipe hand landmarks as a fallback.")]
         [SerializeField] private bool _fallbackToMediaPipe = true;
 
+        [Header("Needle detection (vision)")]
+        [Tooltip("Runs the trained needle model (arm-needle-pose-320.onnx) alongside the arm model. " +
+                 "Optional: when unassigned, InjectionSiteDetector falls back to hand tracking.")]
+        [SerializeField] private NeedleDetector _needleDetector;
+        [Tooltip("Only run the needle model once an arm is locked. The needle tip is only consumed " +
+                 "during injection (which requires a locked arm), so this keeps the whole GPU budget " +
+                 "on arm acquisition until then.")]
+        [SerializeField] private bool _runNeedleOnlyWhileLocked = true;
+        [Tooltip("How strongly to smooth the needle tip/hub world positions (0 = raw, 1 = frozen).")]
+        [SerializeField, Range(0f, 1f)] private float _needleWorldSmoothing = 0.5f;
+        [Tooltip("Seconds without a fresh needle detection before TryGetNeedleTip reports lost. " +
+                 "Bridges the gap between completed inferences (the model only finishes every few frames).")]
+        [SerializeField] private float _needleLostAfterSeconds = 0.75f;
+
         [Header("Depth estimation")]
         [SerializeField] private EnvironmentRaycastManager _depthRaycaster;
         [Tooltip("Real-world length (m) of the detected arm segment. Used to estimate depth from " +
@@ -169,6 +183,27 @@ namespace ARArmDetection
         /// or failed this frame. Surfaced in the debug HUD to diagnose depth-API issues.</summary>
         public string DepthAxisStatus { get; private set; } = "Not attempted yet";
 
+        /// <summary>Human-readable needle detection state for the HUD.</summary>
+        public string NeedleStatus { get; private set; } = "No needle detector";
+
+        /// <summary>
+        /// Smoothed world position of the vision-detected needle tip. Returns false when the
+        /// needle detector is missing/idle or the needle hasn't been seen recently.
+        /// </summary>
+        public bool TryGetNeedleTip(out Vector3 tip)
+        {
+            tip = _smoothedNeedleTipWorld;
+            return _hasNeedleWorld;
+        }
+
+        /// <summary>Smoothed world positions of the needle tip and hub (the needle axis).</summary>
+        public bool TryGetNeedle(out Vector3 tip, out Vector3 hub)
+        {
+            tip = _smoothedNeedleTipWorld;
+            hub = _smoothedNeedleHubWorld;
+            return _hasNeedleWorld;
+        }
+
         private struct ArmCandidate
         {
             public Vector3 Shoulder;
@@ -204,6 +239,11 @@ namespace ARArmDetection
 
         private bool _hasStableFixedAxisDepth;
         private float _stableFixedAxisDepth;
+
+        private bool _hasNeedleWorld;
+        private Vector3 _smoothedNeedleTipWorld;
+        private Vector3 _smoothedNeedleHubWorld;
+        private float _needleLastSeenTime;
 
         private void Reset()
         {
@@ -374,7 +414,70 @@ namespace ARArmDetection
             _overlay.Render(renderOverlay ? (best.Shoulder, best.Wrist) : ((Vector3, Vector3)?)null, camTransform);
 
             LastFoundArm = found;
+            UpdateNeedleDetection();
             _debugHUD?.ReportDetections(persons.Count, found ? 1 : 0);
+        }
+
+        /// <summary>
+        /// Runs the needle model on the same camera frame and maintains a smoothed world-space
+        /// needle tip/hub for InjectionSiteDetector. The needle is a separate, second worker —
+        /// the arm model stays untouched — so it only runs while an arm is locked by default.
+        /// </summary>
+        private void UpdateNeedleDetection()
+        {
+            if (_needleDetector == null || !_needleDetector.IsReady)
+            {
+                NeedleStatus = _needleDetector == null ? "No needle detector" : _needleDetector.Status;
+                _hasNeedleWorld = false;
+                return;
+            }
+
+            if (_runNeedleOnlyWhileLocked && _lockState != LockState.Locked)
+            {
+                NeedleStatus = "Idle until arm locked";
+                _hasNeedleWorld = false;
+                return;
+            }
+
+            _needleDetector.Run(_cameraSource.CurrentTexture);
+
+            if (_needleDetector.LastRunConsumedNewResult && _needleDetector.TryGetLatest(out var needle))
+            {
+                // The needle only matters near the locked arm, so the arm's depth is the best
+                // fallback when the depth raycast misses (thin needle/hand rarely in the mesh).
+                float fallbackDepth = _hasSmoothedArmWorld
+                    ? Vector3.Distance(_cameraSource.CameraPose.position,
+                                       (_smoothedShoulderWorld + _smoothedWristWorld) * 0.5f)
+                    : Mathf.Clamp(0.6f, _minDepthMeters, _maxDepthMeters);
+
+                Vector3 tipWorld = ProjectImagePoint(needle.TipImage, fallbackDepth, out _);
+                Vector3 hubWorld = ProjectImagePoint(needle.HubImage, fallbackDepth, out _);
+
+                if (!_hasNeedleWorld)
+                {
+                    _smoothedNeedleTipWorld = tipWorld;
+                    _smoothedNeedleHubWorld = hubWorld;
+                }
+                else
+                {
+                    float t = 1f - _needleWorldSmoothing;
+                    _smoothedNeedleTipWorld = Vector3.Lerp(_smoothedNeedleTipWorld, tipWorld, t);
+                    _smoothedNeedleHubWorld = Vector3.Lerp(_smoothedNeedleHubWorld, hubWorld, t);
+                }
+
+                _hasNeedleWorld = true;
+                _needleLastSeenTime = Time.time;
+                NeedleStatus = $"Needle {needle.Confidence:F2} @ {Vector3.Distance(_cameraSource.CameraPose.position, _smoothedNeedleTipWorld):F2} m";
+            }
+            else if (_hasNeedleWorld && Time.time - _needleLastSeenTime > _needleLostAfterSeconds)
+            {
+                _hasNeedleWorld = false;
+                NeedleStatus = $"Needle lost ({_needleDetector.Status})";
+            }
+            else if (!_hasNeedleWorld)
+            {
+                NeedleStatus = $"Searching ({_needleDetector.Status})";
+            }
         }
 
         public float GetEstimatedDepth(PersonDetection p) => EstimateDepth(p);

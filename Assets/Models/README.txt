@@ -26,8 +26,21 @@ Produced by the Training/ pipeline (see Training/README.md):
   python scripts/03_train.py --imgsz 320
   python scripts/04_export.py --weights runs/<run>/weights/best.pt
 
+DEPLOYED NEEDLE MODEL: arm-needle-pose-320.onnx  (== lucas.onnx, arm_needle_pose run)
+Assigned to NeedleDetector (Tools > AR Arm Detection > Add Needle Detector).
+Runs ALONGSIDE the arm model; only its needle class is read.
+
+  Input : [1, 3, 320, 320]
+  Output: [1, 18, 2100] features-first
+    0..3   box cx, cy, w, h     (input-pixel scale, letterboxed 320x320)
+    4..5   class scores         {0: arm, 1: needle}  -> NeedleDetector reads class 1
+    6..17  4 keypoints (kx,ky,v): needle kpt0 = tip (contact point), kpt3 = hub/plunger
+           (arm keypoints are untrained placeholders - the arm comes from arm-pose-320)
+
+  NeedleDetector defaults match this model: Num Classes = 2, Needle Class Id = 1.
+  For a future needle-only export ([1,11,N]) set Num Classes = 1, Needle Class Id = 0.
+
 LEGACY MODELS (kept for reference; class orders CONFLICT — check before use):
-  arm-needle-pose-320.onnx / lucas.onnx : 320, [1,18,N], {0: arm, 1: needle}
   best.onnx / best_v2.onnx              : 640, [1,18,N], {0: Syringe, 1: Arm}  (swapped!)
   custom-arm-detector.onnx              : 640, [1,5,N], box-only
 
