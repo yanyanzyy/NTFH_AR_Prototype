@@ -281,6 +281,8 @@ namespace ARArmDetection
         private readonly List<Vector3> _axisHits = new();
         private readonly List<float> _axisDepths = new();
         private readonly List<Vector3> _axisFilteredPoints = new();
+        // Median-depth sampler for the fixed-axis anchor (see TrySenseCenterDepth).
+        private readonly List<float> _centerDepthSamples = new();
         private int _axisCacheFrame = -1;
         private Rect _axisCacheBounds;
         private bool _axisCacheResult;
@@ -803,13 +805,40 @@ namespace ARArmDetection
             }
             else if (_useFixedWorldAxis)
             {
-                // For a stationary mannequin, a stable heuristic depth is less jittery than
-                // per-frame Depth API raycasts, which can make the overlay appear to zoom.
-                float stableDepth = GetStableFixedAxisDepth(depthHeuristic);
-                Vector3 centerWorld = _cameraSource.ImagePointToWorld(p.ImageBounds.center, stableDepth);
+                // Anchor the box centre at REAL sensed depth (Depth API) rather than the
+                // monocular box-size guess. The size guess changes with viewing angle,
+                // foreshortening and box jitter, so it lands the arm at a different world
+                // point — and a wrong depth — from each viewpoint: that is what makes the
+                // overlay lock in a different place from different positions, and (because a
+                // wrong-depth anchor sits in front of/behind the real arm) appear to slide via
+                // parallax as the head moves. Sensed depth is view-independent, so it fixes both.
+                float depth;
+                string depthSrc;
+                if (TrySenseCenterDepth(p.ImageBounds, out float sensedDepth))
+                {
+                    depth = GetStableFixedAxisDepth(sensedDepth);
+                    depthRaycastHits++;
+                    depthSrc = $"sensed {depth:F2} m";
+                }
+                else if (_hasStableFixedAxisDepth)
+                {
+                    // Depth API missed this frame (thin limb / edge pixel): hold the last good
+                    // sensed depth rather than snapping to the unreliable box-size guess.
+                    depth = _stableFixedAxisDepth;
+                    depthSrc = $"held {depth:F2} m (no depth hit)";
+                }
+                else
+                {
+                    // Nothing sensed yet — bootstrap from the box-size heuristic until the
+                    // first real depth hit arrives.
+                    depth = GetStableFixedAxisDepth(depthHeuristic);
+                    depthSrc = $"heuristic {depth:F2} m";
+                }
+
+                Vector3 centerWorld = _cameraSource.ImagePointToWorld(p.ImageBounds.center, depth);
                 GetFixedAxisEndpoints(centerWorld, out shoulderWorld, out wristWorld);
-                DepthAxisStatus = $"Fixed-axis fallback - yaw={_fixedArmYawDegrees:F0} deg, " +
-                                  $"length={_fixedArmLengthMeters:F2} m, depth={stableDepth:F2} m";
+                DepthAxisStatus = $"Fixed-axis - yaw={_fixedArmYawDegrees:F0} deg, " +
+                                  $"length={_fixedArmLengthMeters:F2} m, depth={depthSrc}";
             }
             else
             {
@@ -1089,6 +1118,49 @@ namespace ARArmDetection
             }
 
             return _stableFixedAxisDepth;
+        }
+
+        // Sample pattern for TrySenseCenterDepth: box centre plus a cross at ±20% of the box
+        // size. The offsets stay well inside the arm silhouette so we sample the limb, not the
+        // background behind a loose box. Stored as box-relative fractions.
+        private static readonly Vector2[] CenterDepthSampleOffsets =
+        {
+            new Vector2( 0f,   0f),
+            new Vector2(-0.2f, 0f),
+            new Vector2( 0.2f, 0f),
+            new Vector2( 0f,  -0.2f),
+            new Vector2( 0f,   0.2f),
+        };
+
+        /// <summary>
+        /// Real, view-independent depth (metres from the RGB camera) of the arm at the given
+        /// box, sampled from the Depth API. Raycasts the box centre plus a small inner cross and
+        /// returns the MEDIAN hit distance, so a single dropped or edge pixel can't skew it.
+        /// Returns false when the Depth API is unavailable or nothing was hit this frame.
+        /// </summary>
+        private bool TrySenseCenterDepth(Rect imageBounds, out float depth)
+        {
+            depth = 0f;
+            if (_depthRaycaster == null || !EnvironmentRaycastManager.IsSupported) return false;
+
+            var samples = _centerDepthSamples;
+            samples.Clear();
+            Vector3 camPos = _cameraSource.CameraPose.position;
+            Vector2 center = imageBounds.center;
+
+            foreach (var o in CenterDepthSampleOffsets)
+            {
+                Vector2 pt = new Vector2(center.x + o.x * imageBounds.width,
+                                         center.y + o.y * imageBounds.height);
+                var ray = _cameraSource.ImagePointToRay(pt);
+                if (_depthRaycaster.Raycast(ray, out var hit, _maxDepthMeters))
+                    samples.Add(Vector3.Distance(camPos, hit.point));
+            }
+
+            if (samples.Count == 0) return false;
+            samples.Sort();
+            depth = Mathf.Clamp(samples[samples.Count / 2], _minDepthMeters, _maxDepthMeters);
+            return true;
         }
 
         /// <summary>

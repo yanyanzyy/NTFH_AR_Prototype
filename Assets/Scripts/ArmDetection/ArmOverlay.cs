@@ -19,6 +19,8 @@ namespace ARArmDetection
     ///      0.0 = pivot is at the shoulder end
     ///      0.5 = pivot is at the midpoint  (default)
     ///      1.0 = pivot is at the wrist end
+    /// 5. If the overlay sits to one side of the real arm, adjust _lateralOffset
+    ///    (metres) to slide it left/right perpendicular to the arm.
     ///
     /// DEPTH / OCCLUSION
     /// -----------------
@@ -48,6 +50,10 @@ namespace ARArmDetection
         [Tooltip("Where the prefab's pivot sits along the arm:\n" +
                  "  0.0 = shoulder end\n  0.5 = midpoint (default)\n  1.0 = wrist end")]
         [SerializeField, Range(0f, 1f)] private float _pivotOffset = 0.5f;
+
+        [Tooltip("Slide the model left/right, perpendicular to the arm in the horizontal plane " +
+                 "(metres). +ve/-ve pick a side; choose the sign that lines up with the real arm.")]
+        [SerializeField, Range(-0.3f, 0.3f)] private float _lateralOffset = 0f;
 
         // ── Debug quad (fallback) ──────────────────────────────────────────────────────
         [Header("Debug Quad (fallback when no prefab assigned)")]
@@ -176,6 +182,16 @@ namespace ARArmDetection
             // Pivot offset: move the anchor point along the arm direction.
             // _pivotOffset=0 → place at shoulder; 0.5 → midpoint; 1 → wrist.
             Vector3 pos = Vector3.Lerp(shoulder, wrist, _pivotOffset);
+
+            // Lateral offset: slide perpendicular to the arm, in the horizontal plane.
+            // Sign picks the side; the user tunes the value to match the real arm.
+            if (Mathf.Abs(_lateralOffset) > 1e-6f)
+            {
+                Vector3 lateralDir = Vector3.Cross(Vector3.up, armDir);
+                if (lateralDir.sqrMagnitude < 1e-6f)          // arm ~vertical: pick any perpendicular
+                    lateralDir = Vector3.Cross(Vector3.forward, armDir);
+                pos += lateralDir.normalized * _lateralOffset;
+            }
 
             // Uniform scale so the model's length matches the detected arm.
             Vector3 scale = Vector3.one;

@@ -2060,6 +2060,7 @@ MonoBehaviour:
   _naturalArmLengthMeters: 0.75
   _scaleToFitDetectedLength: 1
   _pivotOffset: 0.4
+  _lateralOffset: 0
   _color: {r: 1, g: 0, b: 0, a: 1}
   _thicknessRatio: 0.22
   _minThickness: 0.05
@@ -2110,7 +2111,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 967b15873a7451b40bef84d43bd1704b, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.NeedleDetector
-  _modelAsset: {fileID: 5022602860645237092, guid: 40f7a5eff729c5742b7213fc0dc1f306, type: 3}
+  _modelAsset: {fileID: 5022602860645237092, guid: 40d2ba43d27c262478a3c5a9c30b1a08, type: 3}
   _backend: 256
   _inputSize: 320
   _quantizeToFp16: 1
