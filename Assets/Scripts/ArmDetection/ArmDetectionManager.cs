@@ -102,6 +102,11 @@ namespace ARArmDetection
                  "before it freezes. Lets the smoothed world pose settle onto the arm first. " +
                  "0 = freeze on the very first locked pose.")]
         [SerializeField] private float _lockRefineSeconds = 1.5f;
+        [Tooltip("Completely stop running the arm model while the lock is frozen. A frozen lock " +
+                 "ignores every detection anyway, so inference is pure waste — running it forever " +
+                 "heats the headset until it throttles (progressive lag) and can crash the app. " +
+                 "The model resumes automatically the moment the lock is released.")]
+        [SerializeField] private bool _suspendDetectionWhileFrozen = true;
 
         [Header("Depth-based arm axis (bypasses keypoint regression)")]
         [Tooltip("When a depth raycaster is available, estimate the arm's 3D axis by sampling a grid " +
@@ -115,6 +120,11 @@ namespace ARArmDetection
         [Tooltip("Flip which depth-derived axis endpoint is treated as shoulder vs wrist. Toggle once " +
                  "after visually checking overlay orientation against your fixed mannequin setup.")]
         [SerializeField] private bool _swapDepthAxisEndpoints = false;
+        [Tooltip("Snap the depth-derived endpoints to the known mannequin arm length " +
+                 "(_fixedArmLengthMeters), keeping the sensed midpoint and direction. The raw " +
+                 "raycast extremes land wherever the sample grid happened to hit, so the raw span " +
+                 "jitters and under/over-shoots the real arm; the physical length is constant.")]
+        [SerializeField] private bool _normalizeDepthAxisLength = true;
 
         [Header("Fixed-axis fallback (no depth sensing or trained keypoints needed)")]
         [Tooltip("When depth-axis estimation can't get hits (e.g. raycasting against a handheld prop " +
@@ -167,7 +177,8 @@ namespace ARArmDetection
 
         /// <summary>
         /// Releases the current target lock so a new arm can be acquired. Wired to the
-        /// UNLOCK ARM button (and controller B) for when the overlay grabbed the wrong target.
+        /// UNLOCK ARM button, the hand pinch-hold gesture, and controller B (see
+        /// ArmLockButton) for when the overlay grabbed the wrong target.
         /// </summary>
         public void Unlock()
         {
@@ -333,6 +344,33 @@ namespace ARArmDetection
             if (!_cameraSource.HasFrame) { ManagerStatus = "Waiting: no camera frame"; return; }
 
             UpdateMediaPipeLifecycle();
+
+            // Frozen lock: the world-anchored pose is held and every detection would be
+            // ignored anyway, so skip inference entirely (the model resumes on Unlock()).
+            // Without this the arm model runs at full tilt forever after locking, which
+            // heats the headset into throttling and eventually crashes the app.
+            if (_suspendDetectionWhileFrozen && IsLockFrozen() && _hasStableArmImage && _hasSmoothedArmWorld)
+            {
+                bool heldFound = false;
+                ArmCandidate held = default;
+                int heldIdx = -1;
+                Side heldSide = _stableArmSide;
+                UseHeldLockPose(ref heldFound, ref held, ref heldIdx, ref heldSide);
+
+                LockStatus = "Locked (frozen in place)";
+                ManagerStatus = "Locked - arm model suspended";
+                LastArmStatus = "Held (frozen lock)";
+                LastPersonCount = LastDetections.Count;
+                SelectedDetectionIndex = heldFound ? heldIdx : -1;
+                SelectedDetectionSide = heldSide;
+                LastFoundArm = heldFound;
+
+                _overlay.Render(heldFound ? (held.Shoulder, held.Wrist) : ((Vector3, Vector3)?)null,
+                                _cameraSource.CameraTransform);
+                UpdateNeedleDetection();
+                _debugHUD?.ReportDetections(LastPersonCount, heldFound ? 1 : 0);
+                return;
+            }
 
             if (!HasReadyDetector()) { ManagerStatus = "Waiting: detector not ready"; return; }
 
@@ -565,9 +603,7 @@ namespace ARArmDetection
 
             bool customUsable = _useCustomArmDetector && _customArmDetector != null && _customArmDetector.IsReady;
             bool resultsUsable = !customUsable || _fallbackToMediaPipe;
-            bool lockFrozen = _lockState == LockState.Locked && _freezeWhileLocked &&
-                              Time.time - _lockAcquiredTime >= _lockRefineSeconds;
-            bool starving = (!customUsable || _cachedCustomDetections.Count == 0) && !lockFrozen;
+            bool starving = (!customUsable || _cachedCustomDetections.Count == 0) && !IsLockFrozen();
 
             if (resultsUsable && starving)
             {
@@ -970,6 +1006,12 @@ namespace ARArmDetection
             }
         }
 
+        /// <summary>True once the lock has passed its refinement window and is frozen in
+        /// world space (all detections ignored until Unlock()).</summary>
+        private bool IsLockFrozen() =>
+            _lockState == LockState.Locked && _freezeWhileLocked &&
+            Time.time - _lockAcquiredTime >= _lockRefineSeconds;
+
         /// <summary>Gate radius for lock updates; grows while the arm is undetected so a
         /// target that moved during a dropout can still be re-captured.</summary>
         private float CurrentLockGateRadius() =>
@@ -1142,6 +1184,21 @@ namespace ARArmDetection
                 float proj = Vector3.Dot(p - centroid, axis);
                 if (proj < minProj) { minProj = proj; minPt = p; }
                 if (proj > maxProj) { maxProj = proj; maxPt = p; }
+            }
+
+            // The raw extreme hits jitter with the sample grid and rarely span the full
+            // arm; the mannequin's real length is known and constant, so keep the sensed
+            // midpoint + direction and snap the endpoints to that length.
+            if (_normalizeDepthAxisLength && _fixedArmLengthMeters > 0.01f)
+            {
+                Vector3 mid = (minPt + maxPt) * 0.5f;
+                Vector3 dir = maxPt - minPt;
+                if (dir.sqrMagnitude > 1e-6f)
+                {
+                    Vector3 half = dir.normalized * (_fixedArmLengthMeters * 0.5f);
+                    minPt = mid - half;
+                    maxPt = mid + half;
+                }
             }
 
             endA = _swapDepthAxisEndpoints ? maxPt : minPt;

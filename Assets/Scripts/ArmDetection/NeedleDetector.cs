@@ -365,7 +365,10 @@ namespace ARArmDetection
 
             var shape = output.shape;
             _lastOutputShape = shape.ToString();
-            var data = output.DownloadToArray();
+            // The tensor is already a CPU clone (ReadbackAndClone), so read it in place —
+            // DownloadToArray would copy the whole output into a fresh managed array every
+            // inference and feed the GC for nothing.
+            ReadOnlySpan<float> data = output.AsReadOnlySpan();
 
             if (!TryGetYoloLayout(shape, out int rows, out int features, out bool featuresFirst))
             {
@@ -452,7 +455,7 @@ namespace ARArmDetection
             return false;
         }
 
-        private float ReadFeature(float[] data, TensorShape shape, int row, int feature, bool featuresFirst)
+        private float ReadFeature(ReadOnlySpan<float> data, TensorShape shape, int row, int feature, bool featuresFirst)
         {
             if (shape.rank == 3)
             {
@@ -466,7 +469,7 @@ namespace ARArmDetection
             return featuresFirst ? data[feature * rows2 + row] : data[row * features2 + feature];
         }
 
-        private Vector2 ReadKeypoint(float[] data, TensorShape shape, int row, int kptOffset, int k,
+        private Vector2 ReadKeypoint(ReadOnlySpan<float> data, TensorShape shape, int row, int kptOffset, int k,
                                      bool featuresFirst, int imageWidth, int imageHeight)
         {
             float kx = ReadFeature(data, shape, row, kptOffset + k * 3, featuresFirst);
