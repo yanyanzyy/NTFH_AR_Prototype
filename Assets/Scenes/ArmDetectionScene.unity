@@ -1611,7 +1611,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &1142564976
 Transform:
   m_ObjectHideFlags: 0
@@ -2056,10 +2056,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmOverlay
   _armModelPrefab: {fileID: -8098169881513260187, guid: c6f3c4bfaeb24194e93917b3df9f63bd, type: 3}
-  _modelArmAxis: {x: 0, y: 0, z: 2}
-  _naturalArmLengthMeters: 0.65
+  _modelArmAxis: {x: 75, y: -2, z: -275}
+  _naturalArmLengthMeters: 0.75
   _scaleToFitDetectedLength: 1
-  _pivotOffset: 0.5
+  _pivotOffset: 0.4
   _color: {r: 1, g: 0, b: 0, a: 1}
   _thicknessRatio: 0.22
   _minThickness: 0.05
@@ -2097,7 +2097,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1593298066
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2108,7 +2108,7 @@ MonoBehaviour:
   m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 967b15873a7451b40bef84d43bd1704b, type: 3}
-  m_Name:
+  m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.NeedleDetector
   _modelAsset: {fileID: 5022602860645237092, guid: 40f7a5eff729c5742b7213fc0dc1f306, type: 3}
   _backend: 256
