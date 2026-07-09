@@ -144,6 +144,12 @@ namespace ARArmDetection
         [SerializeField, Range(0f, 1f)] private float _fixedAxisDepthSmoothing = 0.97f;
         [Tooltip("Flip which fixed-axis endpoint is treated as shoulder vs wrist.")]
         [SerializeField] private bool _swapFixedAxisEndpoints = false;
+        [Tooltip("Manual depth trim (metres) added to the arm's depth along the camera view ray. " +
+                 "If the LOCKED overlay slides against the real arm when you move your head, it is " +
+                 "sitting in front of / behind the arm (parallax) - nudge this in Play mode until it " +
+                 "seats on the arm and stops sliding. +ve pushes it away from you, -ve pulls it closer. " +
+                 "Because the pose is world-locked once frozen, dialling this in once fixes the drift.")]
+        [SerializeField, Range(-0.5f, 0.5f)] private float _fixedAxisDepthOffsetMeters = 0f;
 
         [Header("Memory hygiene")]
         [Tooltip("Force a full GC sweep this often (seconds). This app allocates very little " +
@@ -835,10 +841,16 @@ namespace ARArmDetection
                     depthSrc = $"heuristic {depth:F2} m";
                 }
 
+                // Manual depth trim: shift the anchor along the view ray to seat it exactly on
+                // the arm. Kills residual parallax when the auto depth is slightly off (or when
+                // the Depth API can't sense the arm and we fell back to the heuristic).
+                depth = Mathf.Clamp(depth + _fixedAxisDepthOffsetMeters, _minDepthMeters, _maxDepthMeters);
+
                 Vector3 centerWorld = _cameraSource.ImagePointToWorld(p.ImageBounds.center, depth);
                 GetFixedAxisEndpoints(centerWorld, out shoulderWorld, out wristWorld);
                 DepthAxisStatus = $"Fixed-axis - yaw={_fixedArmYawDegrees:F0} deg, " +
-                                  $"length={_fixedArmLengthMeters:F2} m, depth={depthSrc}";
+                                  $"length={_fixedArmLengthMeters:F2} m, depth={depthSrc}" +
+                                  (Mathf.Abs(_fixedAxisDepthOffsetMeters) > 1e-4f ? $" (trim {_fixedAxisDepthOffsetMeters:+0.00;-0.00} m)" : "");
             }
             else
             {

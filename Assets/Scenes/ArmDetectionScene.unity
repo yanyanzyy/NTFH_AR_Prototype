@@ -2803,7 +2803,7 @@ MonoBehaviour:
   _armOnlyImageSmoothing: 0.8
   _armOnlyWorldSmoothing: 0.9
   _customDetectorEveryNFrames: 1
-  _acquireConsistentFrames: 4
+  _acquireConsistentFrames: 2
   _acquireRadiusMeters: 0.3
   _acquireMinConfidence: 0.4
   _acquireGapToleranceSeconds: 0.6
@@ -2812,7 +2812,7 @@ MonoBehaviour:
   _lockGateMaxRadiusMeters: 0.9
   _autoUnlockAfterLostSeconds: 0
   _freezeWhileLocked: 1
-  _lockRefineSeconds: 1.5
+  _lockRefineSeconds: 0
   _suspendDetectionWhileFrozen: 1
   _useDepthAxisEstimation: 0
   _depthSampleGrid: 6
