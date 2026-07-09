@@ -9,6 +9,7 @@ namespace ARArmDetection.Facilitator
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void CreateForArmDetectionScene()
         {
+            return; // Disable temporarily for pose debugging
             if (Object.FindFirstObjectByType<ArmDetectionManager>() == null) return;
             if (Object.FindFirstObjectByType<FacilitatorModeController>() != null) return;
 

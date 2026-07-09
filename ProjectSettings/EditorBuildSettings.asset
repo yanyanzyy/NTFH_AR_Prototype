@@ -11,9 +11,12 @@ EditorBuildSettings:
   - enabled: 0
     path: Assets/MR_TestScene.unity
     guid: b4fec541ec06eb24d904ee557cd9f1d9
-  - enabled: 1
+  - enabled: 0
     path: Assets/Scenes/ArmDetectionScene.unity
     guid: 5d80259b113304bacbf49d5ff4b8ea22
+  - enabled: 1
+    path: Assets/Scenes/SyringePoseDetectionScene.unity
+    guid: b3a188ae83509bf47a8bc4624a42f14f
   m_configObjects:
     Unity.XR.Oculus.Settings: {fileID: 11400000, guid: ee067a59ed36ade4f8a66621b01d0baf, type: 2}
     com.unity.dt.app-ui: {fileID: 11400000, guid: 1b1c20d82303e4b5781c3ef50ac1449f, type: 2}

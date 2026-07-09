@@ -1,0 +1,83 @@
+using UnityEngine;
+using UnityEngine.UI;
+
+public class SyringeDebugHUD : MonoBehaviour
+{
+    [Header("Dependencies to Monitor")]
+    [SerializeField] private CustomSyringeDetector detector;
+
+    private GameObject _panelRoot;
+    private Text _hudText;
+
+    private void Awake()
+    {
+        // 1. Build a clean, lightweight UI Canvas that doesn't rely on outside prefabs
+        _panelRoot = new GameObject("SyringeDebugCanvas");
+        _panelRoot.transform.SetParent(transform, false);
+
+        var canvas = _panelRoot.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        
+        var canvasRt = (RectTransform)_panelRoot.transform;
+        canvasRt.sizeDelta = new Vector2(500f, 300f);
+        canvasRt.localScale = Vector3.one * 0.0015f; // Scale down so it fits comfortably in VR view
+
+        // 2. Create a solid dark background card so the text is readable
+        var bgGo = new GameObject("Background", typeof(RectTransform), typeof(Image));
+        bgGo.transform.SetParent(_panelRoot.transform, false);
+        var bgRt = (RectTransform)bgGo.transform;
+        bgRt.anchorMin = Vector2.zero; bgRt.anchorMax = Vector2.one;
+        bgRt.offsetMin = Vector2.zero; bgRt.offsetMax = Vector2.zero;
+        bgGo.GetComponent<Image>().color = new Color(0.02f, 0.02f, 0.04f, 0.90f);
+
+        // 3. Create the text block component
+        var textGo = new GameObject("DebugText", typeof(RectTransform), typeof(Text));
+        textGo.transform.SetParent(_panelRoot.transform, false);
+        var textRt = (RectTransform)textGo.transform;
+        textRt.anchorMin = new Vector2(0.05f, 0.05f); textRt.anchorMax = new Vector2(0.95f, 0.95f);
+        textRt.offsetMin = Vector2.zero; textRt.offsetMax = Vector2.zero;
+
+        _hudText = textGo.GetComponent<Text>();
+        _hudText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+        _hudText.fontSize = 16;
+        _hudText.color = Color.white;
+        _hudText.alignment = TextAnchor.UpperLeft;
+    }
+
+    private void LateUpdate()
+    {
+        // 4. Anchor the debug panel directly in front of your head/camera view space
+        var cam = Camera.main;
+        if (cam == null) return;
+
+        Transform ct = cam.transform;
+        transform.position = ct.position + ct.forward * 1.2f + ct.up * -0.2f; // 1.2 meters away, slightly lowered
+        transform.rotation = Quaternion.LookRotation((transform.position - ct.position).normalized, ct.up);
+
+        // 5. Update data display strings
+        if (_hudText == null) return;
+
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
+        sb.AppendLine("<b>== SYRINGE PIPELINE DEBUGGER ==</b>\n");
+
+        if (detector == null)
+        {
+            sb.AppendLine("<color=red>Status: Detector Reference Missing in Inspector</color>");
+        }
+        else
+        {
+            sb.AppendLine($"Live Inference Output Loop: {(detector.isActiveAndEnabled ? "<color=green>ACTIVE</color>" : "<color=yellow>PAUSED</color>")}");
+            sb.AppendLine($"Max Box Confidence: {detector.HighestConfidence:F4}");
+            sb.AppendLine($"Detection State: {(detector.IsSyringeDetected ? "<color=green>FOUND</color>" : "<color=orange>SEARCHING...</color>")}");
+            sb.AppendLine("\nNormalized Anchor Keypoints:");
+            
+            for (int i = 0; i < 4; i++)
+            {
+                Vector2 pt = detector.NormalizedKeypoints[i];
+                sb.AppendLine($"  Point {i + 1}: ({pt.x:F3}, {pt.y:F3})");
+            }
+        }
+
+        _hudText.text = sb.ToString();
+    }
+}
