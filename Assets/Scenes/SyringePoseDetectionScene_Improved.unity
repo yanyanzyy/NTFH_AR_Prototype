@@ -196,7 +196,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 0.05, y: 0.05, z: 0.05}
+  m_LocalScale: {x: 0.02, y: 0.02, z: 0.02}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 1786813074}
@@ -749,7 +749,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Meta.XR.BuildingBlocks::Meta.XR.BuildingBlocks.BuildingBlock
   blockId: 8b26b298-7bf4-490e-b245-a039c0184303
-  instanceId: aa583b02-2aec-44ef-9e58-4250ba7adc32
+  instanceId: c6363cb6-a0b6-4a6e-878e-2455308e31dd
   version: 1
   installationRoutineCheckpoint:
     _installationRoutineId: 
@@ -882,7 +882,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Meta.XR.BuildingBlocks::Meta.XR.BuildingBlocks.BuildingBlock
   blockId: f0540b20-dfd6-420e-b20d-c270f88dc77e
-  instanceId: 05d966cf-77d1-4ede-8228-220f5cc97511
+  instanceId: 9beab1b1-67b0-45a0-a59a-44e45b74411c
   version: 1
   installationRoutineCheckpoint:
     _installationRoutineId: 
@@ -1080,7 +1080,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 0.05, y: 0.05, z: 0.05}
+  m_LocalScale: {x: 0.02, y: 0.02, z: 0.02}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 1786813074}
@@ -1192,7 +1192,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 0.05, y: 0.05, z: 0.05}
+  m_LocalScale: {x: 0.02, y: 0.02, z: 0.02}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 1786813074}
@@ -1629,7 +1629,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Meta.XR.BuildingBlocks::Meta.XR.BuildingBlocks.BuildingBlock
   blockId: 8b26b298-7bf4-490e-b245-a039c0184303
-  instanceId: 5703fe0a-50f2-44db-ab6c-a33bd5e94de1
+  instanceId: 37244220-c683-4b8c-8652-0390c33d0acd
   version: 1
   installationRoutineCheckpoint:
     _installationRoutineId: 
@@ -1798,7 +1798,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Meta.XR.BuildingBlocks::Meta.XR.BuildingBlocks.BuildingBlock
   blockId: e47682b9-c270-40b1-b16d-90b627a5ce1b
-  instanceId: 2ffa864f-f361-46bc-8e63-32db5fe7a89d
+  instanceId: 20fde9ee-9b9e-4146-998d-993c085d85ae
   version: 1
   installationRoutineCheckpoint:
     _installationRoutineId: 
@@ -2056,7 +2056,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 0.05, y: 0.05, z: 0.05}
+  m_LocalScale: {x: 0.02, y: 0.02, z: 0.02}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 1786813074}
@@ -2440,6 +2440,7 @@ MonoBehaviour:
   - {fileID: 1638336173}
   - {fileID: 60655824}
   estimatedDistance: 0.45
+  _keypointConfidenceThreshold: 0.05
 --- !u!1 &1823374992
 GameObject:
   m_ObjectHideFlags: 0
@@ -2488,7 +2489,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Meta.XR.BuildingBlocks::Meta.XR.BuildingBlocks.BuildingBlock
   blockId: 0792d3af-c7d9-4f9c-a6f0-fd580a051e48
-  instanceId: dfac38aa-d5f8-43da-8852-2f9fda542cd0
+  instanceId: e7a1bf9d-4857-42cd-8724-8d4ca34f60ce
   version: 1
   installationRoutineCheckpoint:
     _installationRoutineId: 
@@ -2586,7 +2587,8 @@ MonoBehaviour:
   modelAsset: {fileID: 5022602860645237092, guid: 59d5f5406ca63b14ebc86ae092e14f86, type: 3}
   _backend: 256
   _inputSize: 640
-  _confidenceThreshold: 0.125
+  _confidenceThreshold: 0.2
+  _inferenceInterval: 0.05
   cameraSourceComponent: {fileID: 35756090}
 --- !u!1 &2055796192
 GameObject:

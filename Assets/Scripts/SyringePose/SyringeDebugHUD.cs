@@ -70,11 +70,17 @@ public class SyringeDebugHUD : MonoBehaviour
             sb.AppendLine($"Max Box Confidence: {detector.HighestConfidence:F4}");
             sb.AppendLine($"Detection State: {(detector.IsSyringeDetected ? "<color=green>FOUND</color>" : "<color=orange>SEARCHING...</color>")}");
             sb.AppendLine("\nNormalized Anchor Keypoints:");
-            
+
             for (int i = 0; i < 4; i++)
             {
                 Vector2 pt = detector.NormalizedKeypoints[i];
-                sb.AppendLine($"  Point {i + 1}: ({pt.x:F3}, {pt.y:F3})");
+                float kptConf = detector.KeypointConfidences[i];
+                // Low per-keypoint confidence doesn't mean "wrong code" - VPIC found this model's
+                // 4th keypoint specifically runs ~0.03-0.05 even on clean detections while 0-2 run
+                // ~0.98-0.99. Colour-coding here so a low number reads as "known model limitation",
+                // not "something broke".
+                string confColor = kptConf >= 0.5f ? "green" : (kptConf >= 0.15f ? "yellow" : "red");
+                sb.AppendLine($"  Point {i + 1}: ({pt.x:F3}, {pt.y:F3})  conf=<color={confColor}>{kptConf:F3}</color>");
             }
         }
 

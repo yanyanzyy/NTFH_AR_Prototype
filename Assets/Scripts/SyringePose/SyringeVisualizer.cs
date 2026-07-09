@@ -13,20 +13,20 @@ public class SyringeVisualizer : MonoBehaviour
     [Tooltip("Approximate distance in front of headset face (meters)")]
     [SerializeField] private float estimatedDistance = 0.45f;
 
-    // Start is called once before the first execution of Update after the MonoBehaviour is created
-    void Start()
-    {
-        return;
-    }
+    [Header("Per-Keypoint Confidence")]
+    [Tooltip("A sphere is only shown/moved when its OWN keypoint confidence is at least this - " +
+             "replaces the old 'force everything visible' debug override. Point 4 (Plunger) " +
+             "specifically runs ~0.03-0.05 even on otherwise-correct detections (0-2 run ~0.98-0.99, " +
+             "VPIC finding) - at that confidence its position is closer to noise than data, so hiding " +
+             "it is safer than drawing it somewhere misleading. Lower this if you'd rather always see " +
+             "all 4 (accepting the 4th may be jittery/wrong) than have it disappear.")]
+    [Range(0f, 1f)]
+    [SerializeField] private float _keypointConfidenceThreshold = 0.05f;
 
     // Update is called once per frame
     void Update()
     {
         if (detector == null) return;
-
-        // TEMPORARY DEBUG OVERRIDE: 
-        // This forces the spheres to stay turned ON permanently so you can find them!
-        ToggleLabels(true); 
 
         var cameraSource = detector.cameraSourceComponent;
         if (cameraSource == null) return;
@@ -36,29 +36,24 @@ public class SyringeVisualizer : MonoBehaviour
 
         for (int j = 0; j < 4; j++)
         {
-            if (keyPointLabels[j] != null)
-            {
-                // Recover the normalized coordinate pairs
-                Vector2 normalizedKpt = detector.NormalizedKeypoints[j];
+            if (keyPointLabels[j] == null) continue;
 
-                // Denormalize into active hardware camera image layout bounds
-                float mappedX = normalizedKpt.x * camWidth;
-                float mappedY = normalizedKpt.y * camHeight;
+            bool shouldShow = detector.IsSyringeDetected && detector.KeypointConfidences[j] >= _keypointConfidenceThreshold;
+            keyPointLabels[j].gameObject.SetActive(shouldShow);
+            if (!shouldShow) continue;
 
-                // Project out into true 3D spatial coordinate vectors
-                Vector3 worldPos = cameraSource.ImagePointToWorld(new Vector2(mappedX, mappedY), estimatedDistance);
+            // Recover the normalized coordinate pairs
+            Vector2 normalizedKpt = detector.NormalizedKeypoints[j];
 
-                // Update the position of the corresponding colored sphere
-                keyPointLabels[j].position = worldPos;
-            }
-        }
-    }
+            // Denormalize into active hardware camera image layout bounds
+            float mappedX = normalizedKpt.x * camWidth;
+            float mappedY = normalizedKpt.y * camHeight;
 
-    private void ToggleLabels(bool visible)
-    {
-        foreach (var label in keyPointLabels)
-        {
-            if (label != null) label.gameObject.SetActive(visible);
+            // Project out into true 3D spatial coordinate vectors
+            Vector3 worldPos = cameraSource.ImagePointToWorld(new Vector2(mappedX, mappedY), estimatedDistance);
+
+            // Update the position of the corresponding colored sphere
+            keyPointLabels[j].position = worldPos;
         }
     }
 }
