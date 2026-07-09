@@ -198,7 +198,14 @@ namespace ARArmDetection
             if (_webCamTextureManager == null) TryFindManager();
             if (_webCamTextureManager != null && _sourceKind == SourceKind.PassthroughCameraAccess)
             {
-                if (TryRefreshFromPassthroughCameraAccess()) return;
+                if (TryRefreshFromPassthroughCameraAccess())
+                {
+                    // If the direct-WebCam fallback started before PCA came up, it is now a
+                    // SECOND live camera stream decoding frames nobody reads — a permanent
+                    // CPU/memory drain that contributes to heat and crashes. Kill it.
+                    StopDirectFallback();
+                    return;
+                }
                 // Fall through if PCA returned no texture (e.g. permission not yet granted).
             }
 
@@ -211,6 +218,7 @@ namespace ARArmDetection
                     _currentTexture = t;
                     _imageWidth = t.width;
                     _imageHeight = t.height;
+                    StopDirectFallback();
                     return;
                 }
             }
@@ -381,9 +389,23 @@ namespace ARArmDetection
 
         // ── Direct WebCamTexture fallback ──────────────────────────────────────────────
 
+        /// <summary>Stops and destroys the direct-WebCam fallback stream once a better
+        /// source is delivering frames, so two camera pipelines never run at once.</summary>
+        private void StopDirectFallback()
+        {
+            if (_directCam == null) return;
+            if (_directCam.isPlaying) _directCam.Stop();
+            Destroy(_directCam);
+            _directCam = null;
+            Debug.Log("[PassthroughCameraSource] Primary camera active — direct WebCam fallback stopped.");
+        }
+
         private IEnumerator TryDirectWebCamAfterDelay()
         {
-            yield return new WaitForSeconds(1f);
+            // 5 s (was 1 s): PCA regularly needs a few seconds for permission + stream
+            // start-up, and starting the fallback too eagerly meant a second live camera
+            // stream ran alongside PCA for the whole session.
+            yield return new WaitForSeconds(5f);
             if (HasFrame) yield break;
 
             var devices = WebCamTexture.devices;

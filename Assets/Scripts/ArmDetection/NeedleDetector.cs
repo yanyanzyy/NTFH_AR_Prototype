@@ -51,10 +51,19 @@ namespace ARArmDetection
                  "inference over several frames so the app holds native frame rate. Lower = smoother " +
                  "frames but fewer detections per second. 0 = dispatch the whole model in one frame.")]
         [SerializeField, Range(0, 64)] private int _layersPerFrame = 14;
+        [Tooltip("Minimum seconds between the END of one inference and the START of the next. " +
+                 "Caps the GPU duty cycle so the needle model doesn't run back-to-back forever " +
+                 "while an arm is locked (heat -> throttling -> lag).")]
+        [SerializeField] private float _minSecondsBetweenInferences = 0.25f;
+        [Tooltip("Dispose and rebuild the inference Worker this often (seconds) while running, to " +
+                 "release GPU scratch memory the InferenceEngine backend pools but never returns " +
+                 "during a long run. The model is cached so the rebuild is cheap. 0 = never.")]
+        [SerializeField] private float _workerRecycleSeconds = 25f;
 
         [Header("Filtering")]
         [SerializeField, Range(0f, 1f)] private float _confidenceThreshold = 0.4f;
 
+        private Model _model;
         private Worker _worker;
         private Tensor<float> _inputTensor;
         private IEnumerator _scheduleSteps;
@@ -63,6 +72,9 @@ namespace ARArmDetection
         private int _pendingImageWidth;
         private int _pendingImageHeight;
         private string _lastOutputShape = "-";
+        private float _nextInferenceAllowedTime;
+        private float _nextReadbackWarningTime;
+        private float _workerCreatedTime;
 
         private int _tensorWidth;
         private int _tensorHeight;
@@ -70,6 +82,9 @@ namespace ARArmDetection
         private RenderTexture _letterboxSquare;
         private RenderTexture _letterboxContent;
         private bool _letterboxUnsupportedWarned;
+        // See CustomArmDetector: TextureConverter.ToTensor(Texture, Tensor) leaks a
+        // CommandBuffer per call; record into one reusable buffer instead.
+        private CommandBuffer _toTensorCommandBuffer;
 
         private int _pendingPadX;
         private int _pendingPadY;
@@ -79,7 +94,15 @@ namespace ARArmDetection
         private NeedleDetection _latest;
         private bool _hasLatest;
 
-        public bool IsReady => isActiveAndEnabled && _worker != null && _inputTensor != null;
+        // Kill switch: if the assigned model throws on every inference (e.g. an ONNX with an
+        // operator InferenceEngine can't run — the arm-needle export throws KeyNotFoundException
+        // '423' per frame), stop running it. Left unchecked that spins forever, spamming the log
+        // and leaking GPU memory from each aborted inference. Fail fast instead.
+        private const int MaxConsecutiveFailures = 8;
+        private int _consecutiveFailures;
+        private bool _permanentlyFailed;
+
+        public bool IsReady => isActiveAndEnabled && !_permanentlyFailed && _worker != null && _inputTensor != null;
         public bool LastRunConsumedNewResult { get; private set; }
         public float LastNeedleMaxScore { get; private set; }
         public float ConfidenceThreshold => _confidenceThreshold;
@@ -97,6 +120,15 @@ namespace ARArmDetection
 
         private void OnDisable()
         {
+            DisposeWorker();
+            _model = null;
+            _toTensorCommandBuffer?.Dispose();
+            _toTensorCommandBuffer = null;
+            ReleaseLetterboxTextures();
+        }
+
+        private void DisposeWorker()
+        {
             _scheduleSteps = null;
             _readbackPending = false;
             _pendingOutput = null;
@@ -104,7 +136,45 @@ namespace ARArmDetection
             _worker = null;
             _inputTensor?.Dispose();
             _inputTensor = null;
-            ReleaseLetterboxTextures();
+        }
+
+        private void CreateWorker()
+        {
+            _worker = new Worker(_model, _backend);
+            _inputTensor = new Tensor<float>(new TensorShape(1, 3, _tensorHeight, _tensorWidth));
+            _workerCreatedTime = Time.unscaledTime;
+        }
+
+        /// <summary>Periodically rebuilds the Worker to release pooled GPU memory. Only fires
+        /// when idle (nothing scheduled or awaiting readback). See CustomArmDetector.</summary>
+        private void RecycleWorkerIfDue()
+        {
+            if (_workerRecycleSeconds <= 0f || _model == null) return;
+            if (_readbackPending || _scheduleSteps != null) return;
+            if (Time.unscaledTime - _workerCreatedTime < _workerRecycleSeconds) return;
+
+            _worker?.Dispose();
+            _worker = null;
+            _inputTensor?.Dispose();
+            _inputTensor = null;
+            CreateWorker();
+        }
+
+        /// <summary>Leak-free replacement for TextureConverter.ToTensor(Texture, Tensor):
+        /// records the conversion into a single reusable CommandBuffer.</summary>
+        private void WriteTextureToInputTensor(Texture src)
+        {
+            if (SystemInfo.supportsComputeShaders)
+            {
+                _toTensorCommandBuffer ??= new CommandBuffer { name = "NeedleDetector.ToTensor" };
+                _toTensorCommandBuffer.Clear();
+                _toTensorCommandBuffer.ToTensor(src, _inputTensor);
+                Graphics.ExecuteCommandBuffer(_toTensorCommandBuffer);
+            }
+            else
+            {
+                TextureConverter.ToTensor(src, _inputTensor);
+            }
         }
 
         private void ReleaseLetterboxTextures()
@@ -148,6 +218,15 @@ namespace ARArmDetection
                     return;
                 }
 
+                // Duty-cycle gate, mirroring CustomArmDetector.
+                if (Time.unscaledTime < _nextInferenceAllowedTime)
+                {
+                    Status = "cooling down";
+                    return;
+                }
+
+                RecycleWorkerIfDue();
+
                 WriteLetterboxedInput(source);
                 _pendingImageWidth = source.width;
                 _pendingImageHeight = source.height;
@@ -174,7 +253,21 @@ namespace ARArmDetection
                 _readbackPending = false;
                 _pendingOutput = null;
                 Status = $"{ex.GetType().Name}: {ex.Message}";
-                Debug.LogError($"[NeedleDetector] Run failed: {ex}");
+
+                if (++_consecutiveFailures >= MaxConsecutiveFailures)
+                {
+                    _permanentlyFailed = true;
+                    DisposeWorker();   // release GPU memory; IsReady is now false so Run early-outs
+                    Status = $"DISABLED after {_consecutiveFailures} failures ({ex.GetType().Name}). " +
+                             "Model is incompatible with InferenceEngine; re-export it. " +
+                             "Injection falls back to hand tracking.";
+                    Debug.LogError($"[NeedleDetector] Permanently disabled after {_consecutiveFailures} " +
+                                   $"consecutive failures. Last error: {ex}");
+                }
+                else
+                {
+                    Debug.LogError($"[NeedleDetector] Run failed ({_consecutiveFailures}/{MaxConsecutiveFailures}): {ex}");
+                }
             }
         }
 
@@ -192,7 +285,7 @@ namespace ARArmDetection
                 _pendingPadY = 0;
                 _pendingInvFitX = source.width / (float)_tensorWidth;
                 _pendingInvFitY = source.height / (float)_tensorHeight;
-                TextureConverter.ToTensor(source, _inputTensor);
+                WriteTextureToInputTensor(source);
                 return;
             }
 
@@ -223,7 +316,7 @@ namespace ARArmDetection
             Graphics.Blit(source, _letterboxContent);
             Graphics.CopyTexture(_letterboxContent, 0, 0, 0, 0, contentW, contentH,
                                  _letterboxSquare, 0, 0, padX, padY);
-            TextureConverter.ToTensor(_letterboxSquare, _inputTensor);
+            WriteTextureToInputTensor(_letterboxSquare);
 
             _pendingPadX = padX;
             _pendingPadY = padY;
@@ -292,7 +385,12 @@ namespace ARArmDetection
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[NeedleDetector] Async readback failed ({ex.Message}); retrying synchronously.");
+                // Throttled to avoid per-inference logcat spam (log I/O costs frame time).
+                if (Time.unscaledTime >= _nextReadbackWarningTime)
+                {
+                    _nextReadbackWarningTime = Time.unscaledTime + 5f;
+                    Debug.LogWarning($"[NeedleDetector] Async readback failed ({ex.Message}); retrying synchronously.");
+                }
                 try
                 {
                     cpuOutput = _pendingOutput.ReadbackAndClone();
@@ -300,7 +398,6 @@ namespace ARArmDetection
                 catch (Exception ex2)
                 {
                     Status = $"readback dropped ({ex2.GetType().Name})";
-                    Debug.LogWarning($"[NeedleDetector] Readback dropped: {ex2.Message}");
                 }
             }
 
@@ -308,6 +405,7 @@ namespace ARArmDetection
             {
                 using (cpuOutput)
                     ParsePoseOutput(cpuOutput, _pendingImageWidth, _pendingImageHeight);
+                _consecutiveFailures = 0;   // a clean inference clears the failure streak
                 LastRunConsumedNewResult = true;
                 Status = $"needle={(_hasLatest ? _latest.Confidence.ToString("F2") : "none")} " +
                          $"max={LastNeedleMaxScore:F3} conf>={_confidenceThreshold:F2} shape={_lastOutputShape}";
@@ -315,17 +413,13 @@ namespace ARArmDetection
 
             _pendingOutput = null;
             _readbackPending = false;
+            _nextInferenceAllowedTime = Time.unscaledTime + Mathf.Max(0f, _minSecondsBetweenInferences);
         }
 
         private void LoadModel()
         {
-            _scheduleSteps = null;
-            _readbackPending = false;
-            _pendingOutput = null;
-            _worker?.Dispose();
-            _worker = null;
-            _inputTensor?.Dispose();
-            _inputTensor = null;
+            DisposeWorker();
+            _model = null;
             _hasLatest = false;
 
             if (_modelAsset == null)
@@ -353,8 +447,8 @@ namespace ARArmDetection
 
             if (_quantizeToFp16)
                 ModelQuantizer.QuantizeWeights(QuantizationType.Float16, ref model);
-            _worker = new Worker(model, _backend);
-            _inputTensor = new Tensor<float>(new TensorShape(1, 3, _tensorHeight, _tensorWidth));
+            _model = model;
+            CreateWorker();
             Status = $"Model loaded ({_tensorWidth}x{_tensorHeight})";
         }
 

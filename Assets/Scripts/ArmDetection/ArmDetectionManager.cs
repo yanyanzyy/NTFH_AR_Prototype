@@ -145,6 +145,14 @@ namespace ARArmDetection
         [Tooltip("Flip which fixed-axis endpoint is treated as shoulder vs wrist.")]
         [SerializeField] private bool _swapFixedAxisEndpoints = false;
 
+        [Header("Memory hygiene")]
+        [Tooltip("Force a full GC sweep this often (seconds). This app allocates very little " +
+                 "managed garbage, so the GC can otherwise go minutes without running while " +
+                 "native memory held by finalizable wrappers (e.g. the CommandBuffers " +
+                 "InferenceEngine's ToTensor leaks internally) piles up unreclaimed. A sweep " +
+                 "on this small heap costs a few ms. 0 = disabled.")]
+        [SerializeField] private float _gcSweepIntervalSeconds = 30f;
+
         [Header("Debug")]
         [SerializeField] private ArmDetectionDebugHUD _debugHUD;
         [SerializeField] private bool _bypassWearerFilter = true;
@@ -328,9 +336,19 @@ namespace ARArmDetection
             if (_overlay == null) Debug.LogError("[ArmManager] _overlay is NULL.");
         }
 
+        private float _nextGcSweepTime;
+
         private void Update()
         {
-            if (Time.frameCount % 120 == 0)
+            if (_gcSweepIntervalSeconds > 0f && Time.unscaledTime >= _nextGcSweepTime)
+            {
+                _nextGcSweepTime = Time.unscaledTime + _gcSweepIntervalSeconds;
+                System.GC.Collect();
+            }
+
+            // ~every 8 s at 72 fps: logcat writes cost frame time on Quest, so keep the
+            // heartbeat log sparse.
+            if (Time.frameCount % 600 == 0)
             {
                 Debug.Log($"[ArmManager] cam={_cameraSource != null} custom={_customArmDetector != null} " +
                           $"mp={_mediaPipeDetector != null} " +

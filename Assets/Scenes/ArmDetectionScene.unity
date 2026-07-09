@@ -1634,7 +1634,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1142564975}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 1f630e058e1bf47abb66db052474a863, type: 3}
   m_Name: 
@@ -2105,10 +2105,10 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1593298065}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 967b15873a7451b40bef84d43bd1704b, type: 3}
-  m_Name: 
+  m_Name:
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.NeedleDetector
   _modelAsset: {fileID: 5022602860645237092, guid: 40f7a5eff729c5742b7213fc0dc1f306, type: 3}
   _backend: 256
@@ -2117,6 +2117,8 @@ MonoBehaviour:
   _numClasses: 2
   _needleClassId: 1
   _layersPerFrame: 14
+  _minSecondsBetweenInferences: 0.25
+  _workerRecycleSeconds: 25
   _confidenceThreshold: 0.4
 --- !u!4 &1593298067
 Transform:
@@ -2706,6 +2708,8 @@ MonoBehaviour:
   _inputSize: 320
   _quantizeToFp16: 0
   _layersPerFrame: 8
+  _minSecondsBetweenInferences: 0.2
+  _workerRecycleSeconds: 25
   _confidenceThreshold: 0.3
   _nmsIoUThreshold: 0.25
   _maxDetections: 5
@@ -2819,6 +2823,7 @@ MonoBehaviour:
   _stabilizeFixedAxisDepth: 1
   _fixedAxisDepthSmoothing: 0.97
   _swapFixedAxisEndpoints: 0
+  _gcSweepIntervalSeconds: 30
   _debugHUD: {fileID: 1142564977}
   _bypassWearerFilter: 1
 --- !u!4 &2062675445

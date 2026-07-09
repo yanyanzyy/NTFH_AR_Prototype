@@ -12,7 +12,7 @@ namespace ARArmDetection.Facilitator
     {
         [SerializeField] private float _maximumGrabDistance = 4f;
         [SerializeField] private float _directGrabDistance = 0.12f;
-        [SerializeField] private float _handSearchInterval = 1f;
+        [SerializeField] private float _handSearchInterval = 3f;
         [SerializeField, Range(0.5f, 3f)] private float _holdDurationSeconds = 1f;
 
         private readonly List<OVRHand> _hands = new();
@@ -202,7 +202,7 @@ namespace ARArmDetection.Facilitator
 
             if (Time.unscaledTime >= _nextStatusLogTime)
             {
-                _nextStatusLogTime = Time.unscaledTime + 2f;
+                _nextStatusLogTime = Time.unscaledTime + 30f;
                 Debug.Log($"[FacilitatorHandDrag] found={_hands.Count} tracked={trackedCount} " +
                           $"pointers={pointerCount} fingertips={tipCount} hovering={hoverCount} " +
                           $"grabbed={(_activeHand != null)}");

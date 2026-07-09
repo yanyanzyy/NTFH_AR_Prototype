@@ -53,6 +53,19 @@ namespace ARArmDetection
                  "inference over several frames so the app holds native frame rate. Lower = smoother " +
                  "frames but fewer detections per second. 0 = dispatch the whole model in one frame.")]
         [SerializeField, Range(0, 64)] private int _layersPerFrame = 14;
+        [Tooltip("Minimum seconds between the END of one inference and the START of the next. " +
+                 "Caps the detector's GPU duty cycle: without a gap the model runs back-to-back " +
+                 "the entire time the app is searching, which overheats the headset (thermal " +
+                 "throttling = progressive lag, then an OS kill). 0.2 s ≈ max 5 detections/s — " +
+                 "plenty for locking onto a stationary mannequin arm.")]
+        [SerializeField] private float _minSecondsBetweenInferences = 0.2f;
+        [Tooltip("Dispose and rebuild the inference Worker this often (seconds) while it is " +
+                 "actively running. The InferenceEngine GPU backend pools scratch memory it does " +
+                 "NOT hand back during a long continuous session, so on an app that never stops " +
+                 "searching this grows until the OS kills it (observed: ~5 GB of GPU memory). " +
+                 "Disposing the worker returns that memory; the model itself is cached so the " +
+                 "rebuild is cheap (no re-load/re-quantize) — just a brief hitch. 0 = never.")]
+        [SerializeField] private float _workerRecycleSeconds = 25f;
 
         [Header("Filtering")]
         [SerializeField, Range(0f, 1f)] private float _confidenceThreshold = 0.25f;
@@ -64,6 +77,7 @@ namespace ARArmDetection
                  "the arm. Ignored by the arm-only [1,11,N] export.")]
         [SerializeField] private int _armClassId = 1;
 
+        private Model _model;   // loaded + quantized once, reused across worker recycles
         private Worker _worker;
         private Tensor<float> _inputTensor;
         private IEnumerator _scheduleSteps;
@@ -75,6 +89,9 @@ namespace ARArmDetection
         private readonly List<PersonDetection> _detections = new();
         private readonly List<Rect> _nmsKeptBounds = new();
         private string _lastOutputShape = "-";
+        private float _nextInferenceAllowedTime;
+        private float _nextReadbackWarningTime;
+        private float _workerCreatedTime;
 
         // Actual model input size, read from the ONNX itself at load (falls back to _inputSize
         // only for dynamic-shape models).
@@ -88,6 +105,12 @@ namespace ARArmDetection
         private RenderTexture _letterboxContent;  // aspect-fitted camera frame
         private bool _letterboxUnsupportedWarned;
 
+        // TextureConverter.ToTensor(Texture, Tensor) allocates a NEW CommandBuffer on every
+        // call and never disposes it (InferenceEngine 2.6.1, TextureConverter.cs:27) — the
+        // native command-buffer memory is only reclaimed if a GC finalizer happens to run.
+        // Record into one reusable CommandBuffer instead.
+        private CommandBuffer _toTensorCommandBuffer;
+
         // Mapping from model input pixels back to source-image pixels, captured when the
         // pending inference was scheduled (readback lands frames later).
         private int _pendingPadX;
@@ -95,7 +118,13 @@ namespace ARArmDetection
         private float _pendingInvFitX = 1f;
         private float _pendingInvFitY = 1f;
 
-        public bool IsReady => isActiveAndEnabled && _worker != null && _inputTensor != null;
+        // Kill switch: stop running a model that throws on every inference instead of spinning
+        // forever (log spam + GPU leak from aborted inferences). See NeedleDetector.
+        private const int MaxConsecutiveFailures = 8;
+        private int _consecutiveFailures;
+        private bool _permanentlyFailed;
+
+        public bool IsReady => isActiveAndEnabled && !_permanentlyFailed && _worker != null && _inputTensor != null;
         public bool LastRunConsumedNewResult { get; private set; }
         public bool LastRunScheduledInference { get; private set; }
         public float LastArmOnlyMaxScore { get; private set; }
@@ -114,14 +143,29 @@ namespace ARArmDetection
 
         private void OnDisable()
         {
-            _scheduleSteps = null;
-            _readbackPending = false;
-            _pendingOutput = null;
-            _worker?.Dispose();
-            _worker = null;
-            _inputTensor?.Dispose();
-            _inputTensor = null;
+            DisposeWorker();
+            _model = null;
+            _toTensorCommandBuffer?.Dispose();
+            _toTensorCommandBuffer = null;
             ReleaseLetterboxTextures();
+        }
+
+        /// <summary>Leak-free replacement for TextureConverter.ToTensor(Texture, Tensor):
+        /// records the conversion into a single reusable CommandBuffer.</summary>
+        private void WriteTextureToInputTensor(Texture src)
+        {
+            if (SystemInfo.supportsComputeShaders)
+            {
+                _toTensorCommandBuffer ??= new CommandBuffer { name = "CustomArmDetector.ToTensor" };
+                _toTensorCommandBuffer.Clear();
+                _toTensorCommandBuffer.ToTensor(src, _inputTensor);
+                Graphics.ExecuteCommandBuffer(_toTensorCommandBuffer);
+            }
+            else
+            {
+                // Non-compute path of the static helper doesn't allocate a CommandBuffer.
+                TextureConverter.ToTensor(src, _inputTensor);
+            }
         }
 
         private void ReleaseLetterboxTextures()
@@ -168,6 +212,18 @@ namespace ARArmDetection
                     return _detections;
                 }
 
+                // Duty-cycle gate: give the GPU (and the headset's thermals) a breather
+                // between inferences instead of running the model back-to-back forever.
+                if (Time.unscaledTime < _nextInferenceAllowedTime)
+                {
+                    Status = "cooling down; serving cached arms";
+                    return _detections;
+                }
+
+                // Idle here (nothing scheduled or awaiting readback): safe point to recycle
+                // the worker if it's due, reclaiming pooled GPU memory before the next run.
+                RecycleWorkerIfDue();
+
                 // Start a new inference from the freshest camera frame.
                 WriteLetterboxedInput(source);
                 _pendingImageWidth = source.width;
@@ -196,7 +252,20 @@ namespace ARArmDetection
                 _readbackPending = false;
                 _pendingOutput = null;
                 Status = $"{ex.GetType().Name}: {ex.Message}";
-                Debug.LogError($"[CustomArmDetector] Run failed: {ex}");
+
+                if (++_consecutiveFailures >= MaxConsecutiveFailures)
+                {
+                    _permanentlyFailed = true;
+                    DisposeWorker();
+                    Status = $"DISABLED after {_consecutiveFailures} failures ({ex.GetType().Name}). " +
+                             "Model is incompatible with InferenceEngine; re-export it.";
+                    Debug.LogError($"[CustomArmDetector] Permanently disabled after {_consecutiveFailures} " +
+                                   $"consecutive failures. Last error: {ex}");
+                }
+                else
+                {
+                    Debug.LogError($"[CustomArmDetector] Run failed ({_consecutiveFailures}/{MaxConsecutiveFailures}): {ex}");
+                }
             }
 
             return _detections;
@@ -224,7 +293,7 @@ namespace ARArmDetection
                 _pendingPadY = 0;
                 _pendingInvFitX = source.width / (float)_tensorWidth;
                 _pendingInvFitY = source.height / (float)_tensorHeight;
-                TextureConverter.ToTensor(source, _inputTensor);
+                WriteTextureToInputTensor(source);
                 return;
             }
 
@@ -257,7 +326,7 @@ namespace ARArmDetection
             Graphics.Blit(source, _letterboxContent);
             Graphics.CopyTexture(_letterboxContent, 0, 0, 0, 0, contentW, contentH,
                                  _letterboxSquare, 0, 0, padX, padY);
-            TextureConverter.ToTensor(_letterboxSquare, _inputTensor);
+            WriteTextureToInputTensor(_letterboxSquare);
 
             _pendingPadX = padX;
             _pendingPadY = padY;
@@ -331,7 +400,13 @@ namespace ARArmDetection
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[CustomArmDetector] Async readback failed ({ex.Message}); retrying synchronously.");
+                // Throttled: if every readback errors this would otherwise spam logcat
+                // several times a second, and logcat I/O itself costs frame time on Quest.
+                if (Time.unscaledTime >= _nextReadbackWarningTime)
+                {
+                    _nextReadbackWarningTime = Time.unscaledTime + 5f;
+                    Debug.LogWarning($"[CustomArmDetector] Async readback failed ({ex.Message}); retrying synchronously.");
+                }
                 try
                 {
                     cpuOutput = _pendingOutput.ReadbackAndClone();
@@ -339,7 +414,6 @@ namespace ARArmDetection
                 catch (Exception ex2)
                 {
                     Status = $"readback dropped ({ex2.GetType().Name}); using {_detections.Count} cached arm(s)";
-                    Debug.LogWarning($"[CustomArmDetector] Readback dropped: {ex2.Message}");
                 }
             }
 
@@ -347,6 +421,7 @@ namespace ARArmDetection
             {
                 using (cpuOutput)
                     ParsePoseOutput(cpuOutput, _pendingImageWidth, _pendingImageHeight);
+                _consecutiveFailures = 0;   // a clean inference clears the failure streak
                 LastRunConsumedNewResult = true;
                 Status = $"arms={_detections.Count} max={LastArmOnlyMaxScore:F3} " +
                          $"conf>={_confidenceThreshold:F2} shape={_lastOutputShape}";
@@ -354,17 +429,13 @@ namespace ARArmDetection
 
             _pendingOutput = null;
             _readbackPending = false;
+            _nextInferenceAllowedTime = Time.unscaledTime + Mathf.Max(0f, _minSecondsBetweenInferences);
         }
 
         private void LoadModel()
         {
-            _scheduleSteps = null;
-            _readbackPending = false;
-            _pendingOutput = null;
-            _worker?.Dispose();
-            _worker = null;
-            _inputTensor?.Dispose();
-            _inputTensor = null;
+            DisposeWorker();
+            _model = null;
 
             if (_modelAsset == null)
             {
@@ -394,9 +465,50 @@ namespace ARArmDetection
 
             if (_quantizeToFp16)
                 ModelQuantizer.QuantizeWeights(QuantizationType.Float16, ref model);
-            _worker = new Worker(model, _backend);
-            _inputTensor = new Tensor<float>(new TensorShape(1, 3, _tensorHeight, _tensorWidth));
+
+            // Cache the loaded+quantized model so RecycleWorkerIfDue can rebuild the worker
+            // without re-loading or re-quantizing (which would be a much bigger hitch).
+            _model = model;
+            CreateWorker();
             Status = $"Model loaded ({_tensorWidth}x{_tensorHeight})";
+        }
+
+        private void CreateWorker()
+        {
+            _worker = new Worker(_model, _backend);
+            _inputTensor = new Tensor<float>(new TensorShape(1, 3, _tensorHeight, _tensorWidth));
+            _workerCreatedTime = Time.unscaledTime;
+        }
+
+        private void DisposeWorker()
+        {
+            _scheduleSteps = null;
+            _readbackPending = false;
+            _pendingOutput = null;
+            _worker?.Dispose();
+            _worker = null;
+            _inputTensor?.Dispose();
+            _inputTensor = null;
+        }
+
+        /// <summary>
+        /// Periodically disposes and rebuilds the Worker to release GPU scratch memory the
+        /// InferenceEngine backend pools but never returns during a long continuous run.
+        /// Only fires when the pipeline is idle (no inference scheduled or awaiting readback)
+        /// so no in-flight work is lost; the model is cached so the rebuild is cheap.
+        /// </summary>
+        private void RecycleWorkerIfDue()
+        {
+            if (_workerRecycleSeconds <= 0f || _model == null) return;
+            if (_readbackPending || _scheduleSteps != null) return;
+            if (Time.unscaledTime - _workerCreatedTime < _workerRecycleSeconds) return;
+
+            _worker?.Dispose();
+            _worker = null;
+            _inputTensor?.Dispose();
+            _inputTensor = null;
+            CreateWorker();
+            Debug.Log("[CustomArmDetector] Worker recycled to release pooled GPU memory.");
         }
 
         private void ParsePoseOutput(Tensor<float> output, int imageWidth, int imageHeight)
