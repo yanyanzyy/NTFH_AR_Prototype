@@ -43,7 +43,7 @@ void Update()
         if (keypointSpheres == null || keypointSpheres.Length < 4) return false;
         foreach (var sphere in keypointSpheres)
         {
-            if (sphere == null || !sphere.gameObject.activeInHierarchy) return false;
+            if (sphere == null) return false;
         }
         return true;
     }

@@ -22,7 +22,7 @@ public class SyringeVisualizer : MonoBehaviour
              "it is safer than drawing it somewhere misleading. Lower this if you'd rather always see " +
              "all 4 (accepting the 4th may be jittery/wrong) than have it disappear.")]
     [Range(0f, 1f)]
-    [SerializeField] private float _keypointConfidenceThreshold = 0.05f;
+    [SerializeField] private float _keypointConfidenceThreshold = 0.02f;
     private LineRenderer _lineRenderer;
 
     void Awake()
@@ -78,6 +78,9 @@ public class SyringeVisualizer : MonoBehaviour
 
             // Update the position of the corresponding colored sphere
             keyPointLabels[j].position = worldPos;
+
+            // Draw the action line point right where the sphere is shown
+            _lineRenderer.SetPosition(j, worldPos);
         }
 
         if (allPointsTracking && detector.IsSyringeDetected)
