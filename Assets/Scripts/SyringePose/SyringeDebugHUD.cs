@@ -5,6 +5,7 @@ public class SyringeDebugHUD : MonoBehaviour
 {
     [Header("Dependencies to Monitor")]
     [SerializeField] private CustomSyringeDetector detector;
+    [SerializeField] private SyringeAngleEstimator angleEstimator;
 
     private GameObject _panelRoot;
     private Text _hudText;
@@ -69,6 +70,21 @@ public class SyringeDebugHUD : MonoBehaviour
             sb.AppendLine($"Live Inference Output Loop: {(detector.isActiveAndEnabled ? "<color=green>ACTIVE</color>" : "<color=yellow>PAUSED</color>")}");
             sb.AppendLine($"Max Box Confidence: {detector.HighestConfidence:F4}");
             sb.AppendLine($"Detection State: {(detector.IsSyringeDetected ? "<color=green>FOUND</color>" : "<color=orange>SEARCHING...</color>")}");
+
+            // Render insertion angle metrics from your standalone estimator script
+            if (angleEstimator != null)
+            {
+                string angleColor = angleEstimator.IsAngleAcceptable ? "green" : "red";
+                string statusText = angleEstimator.IsAngleAcceptable ? "ACCEPTABLE" : "INVALID BOUNDS";
+                
+                sb.AppendLine($"Insertion Angle: <b>{angleEstimator.CurrentInsertionAngle:F1}°</b>");
+                sb.AppendLine($"Facilitator Rule: <color={angleColor}><b>{statusText}</b></color>");
+            }
+            else
+            {
+                sb.AppendLine("<color=yellow>Angle Estimator: Script reference unassigned</color>");
+            }
+
             sb.AppendLine("\nNormalized Anchor Keypoints:");
 
             for (int i = 0; i < 4; i++)
