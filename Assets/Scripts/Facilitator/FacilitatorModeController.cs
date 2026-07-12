@@ -15,9 +15,18 @@ namespace ARArmDetection.Facilitator
         [SerializeField] private bool _playNarrationOnStepChange = true;
 
         [Header("Placement")]
-        [Tooltip("Initial distance to the left of the ARM DETECTION panel. The facilitator panel is then detached and fixed in world space.")]
-        [SerializeField] private float _statusPanelLeftOffsetMeters = 0.84f;
-
+        [Tooltip("Initial distance in front of the user's headset when the ARM LOCK/status panel cannot be found.")]
+        [SerializeField] private float _initialDistanceFromUserMeters = 1.25f;
+        [Tooltip("Small vertical offset when using headset fallback placement.")]
+        [SerializeField] private float _initialHeightOffsetMeters = 0.15f;
+        [Tooltip("Initial distance to the left of the ARM LOCK/status panel.")]
+        [SerializeField] private float _statusPanelLeftOffsetMeters = 0.38f;
+        [Tooltip("Small vertical offset from the ARM LOCK/status panel. Negative values place the panel lower.")]
+        [SerializeField] private float _statusPanelVerticalOffsetMeters = -0.58f;
+        [Tooltip("Wait this long before first placing the panel, so the headset pose has settled after scene load.")]
+        [SerializeField] private float _initialPlacementDelaySeconds = 0.75f;
+        [Tooltip("Keep beside the ARM LOCK/status panel until the user drags the facilitator panel.")]
+        [SerializeField] private bool _stayBesideStatusPanelUntilDragged = true;
         [Header("Gaze dwell")]
         [SerializeField] private bool _enableGazeDwell = false;
         [SerializeField, Range(0.5f, 3f)] private float _gazeDwellSeconds = 1.5f;
@@ -45,8 +54,11 @@ namespace ARArmDetection.Facilitator
         private bool _completed;
         private bool _gazeRequiresExit;
         private float _gazeDwellTimer;
-        private ARArmDetection.DetectionModeButton _statusPanel;
+        private global::ARArmDetection.ArmLockButton _lockPanel;
+        private global::ARArmDetection.DetectionModeButton _statusPanel;
         private bool _panelPlacedInWorld;
+        private float _earliestPanelPlacementTime;
+        private bool _initialPlacementReleased;
         private Plane _panelDragPlane;
         private Vector3 _panelDragOffset;
 
@@ -71,6 +83,7 @@ namespace ARArmDetection.Facilitator
             _audioSource.spatialBlend = 0f;
             BuildUI();
             EnsureEventSystem();
+            _earliestPanelPlacementTime = Time.unscaledTime + _initialPlacementDelaySeconds;
         }
 
         private void OnDestroy()
@@ -286,7 +299,7 @@ namespace ARArmDetection.Facilitator
         {
             if (!_enableGazeDwell || _nextButtonRect == null) return;
 
-            var cam = Camera.main;
+            var cam = GetViewerCamera();
             if (cam == null) return;
 
             Rect pixelRect = cam.pixelRect;
@@ -321,8 +334,15 @@ namespace ARArmDetection.Facilitator
             if (!preserveExitRequirement) _gazeRequiresExit = false;
         }
 
+        public void ReleasePanelFromStatusAnchor()
+        {
+            _initialPlacementReleased = true;
+            transform.SetParent(null, true);
+        }
+
         public void BeginPanelDrag(PointerEventData eventData)
         {
+            ReleasePanelFromStatusAnchor();
             if (!_panelPlacedInWorld) PlacePanelInWorldOnce();
 
             Vector3 normal = transform.forward.sqrMagnitude > 0.001f
@@ -352,7 +372,7 @@ namespace ARArmDetection.Facilitator
 
         public void FacePanelTowardViewer()
         {
-            var cam = Camera.main;
+            var cam = GetViewerCamera();
             if (cam == null) return;
 
             Vector3 facingDirection = transform.position - cam.transform.position;
@@ -362,30 +382,92 @@ namespace ARArmDetection.Facilitator
 
         private void PlacePanelInWorldOnce()
         {
-            if (_panelRoot == null || _panelPlacedInWorld) return;
-            if (_statusPanel == null)
-                _statusPanel = FindAnyObjectByType<ARArmDetection.DetectionModeButton>();
+            if (_panelRoot == null || _initialPlacementReleased) return;
+            if (Time.unscaledTime < _earliestPanelPlacementTime) return;
 
-            if (_statusPanel != null)
+            Transform viewer = GetViewerTransform();
+            Transform anchor = GetStatusPanelAnchor();
+            if (anchor != null)
             {
-                Transform statusTransform = _statusPanel.transform;
-                Vector3 worldPosition = statusTransform.TransformPoint(
-                    Vector3.left * _statusPanelLeftOffsetMeters);
-                Quaternion worldRotation = statusTransform.rotation;
-                transform.SetParent(null, true);
-                transform.SetPositionAndRotation(worldPosition, worldRotation);
+                Vector3 localOffset =
+                    Vector3.left * _statusPanelLeftOffsetMeters +
+                    Vector3.up * _statusPanelVerticalOffsetMeters;
+                transform.SetParent(anchor, false);
+                transform.localPosition = localOffset;
+                FacePanelTowardViewer();
+                transform.localScale = Vector3.one;
                 _panelPlacedInWorld = true;
+
+                if (!_stayBesideStatusPanelUntilDragged)
+                    _initialPlacementReleased = true;
                 return;
             }
 
-            var cam = Camera.main;
-            if (cam == null) return;
-            Transform ct = cam.transform;
+            if (viewer == null) return;
+
+            Vector3 forward = Vector3.ProjectOnPlane(viewer.forward, Vector3.up);
+            if (forward.sqrMagnitude < 0.001f)
+                forward = Vector3.ProjectOnPlane(viewer.parent != null ? viewer.parent.forward : Vector3.forward, Vector3.up);
+            if (forward.sqrMagnitude < 0.001f)
+                forward = Vector3.forward;
+
+            forward.Normalize();
             transform.SetParent(null, true);
-            transform.position = ct.position + ct.forward * 1.4f + ct.up * 0.05f;
-            transform.rotation = Quaternion.LookRotation(
-                (transform.position - ct.position).normalized, ct.up);
+            transform.position = viewer.position
+                + forward * Mathf.Max(0.4f, _initialDistanceFromUserMeters)
+                + Vector3.up * _initialHeightOffsetMeters;
+            transform.rotation = Quaternion.LookRotation(forward, Vector3.up);
             _panelPlacedInWorld = true;
+            _initialPlacementReleased = true;
+        }
+
+        private Transform GetStatusPanelAnchor()
+        {
+            if (_lockPanel == null)
+                _lockPanel = FindFirstObjectByType<global::ARArmDetection.ArmLockButton>();
+            if (_lockPanel != null && _lockPanel.isActiveAndEnabled)
+                return _lockPanel.transform;
+
+            if (_statusPanel == null)
+                _statusPanel = FindFirstObjectByType<global::ARArmDetection.DetectionModeButton>();
+            if (_statusPanel != null && _statusPanel.isActiveAndEnabled)
+                return _statusPanel.transform;
+
+            return null;
+        }
+
+        private static Transform GetViewerTransform()
+        {
+            var centerEye = GameObject.Find("CenterEyeAnchor");
+            if (centerEye != null && centerEye.activeInHierarchy) return centerEye.transform;
+
+            var cam = GetViewerCamera();
+            return cam != null ? cam.transform : null;
+        }
+
+        private static Camera GetViewerCamera()
+        {
+            var cameras = Camera.allCameras;
+            for (int i = 0; i < cameras.Length; i++)
+            {
+                var cam = cameras[i];
+                if (cam != null && cam.isActiveAndEnabled && cam.stereoEnabled) return cam;
+            }
+            for (int i = 0; i < cameras.Length; i++)
+            {
+                var cam = cameras[i];
+                if (cam == null || !cam.isActiveAndEnabled) continue;
+                string n = cam.name;
+                if (n.Contains("CenterEye") || n.Contains("Main Camera") || n.Contains("Camera Rig"))
+                    return cam;
+            }
+            if (Camera.main != null && Camera.main.isActiveAndEnabled) return Camera.main;
+            for (int i = 0; i < cameras.Length; i++)
+            {
+                var cam = cameras[i];
+                if (cam != null && cam.isActiveAndEnabled) return cam;
+            }
+            return null;
         }
 
         private bool TryGetPointerPlanePoint(PointerEventData eventData, out Vector3 point)
@@ -412,7 +494,7 @@ namespace ARArmDetection.Facilitator
             }
 
             Camera eventCamera = eventData != null ? eventData.pressEventCamera : null;
-            if (eventCamera == null) eventCamera = Camera.main;
+            if (eventCamera == null) eventCamera = GetViewerCamera();
             if (eventCamera == null || eventData == null) return false;
 
             Ray screenRay = eventCamera.ScreenPointToRay(eventData.position);
@@ -428,7 +510,7 @@ namespace ARArmDetection.Facilitator
 
             var canvas = _panelRoot.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
-            canvas.worldCamera = Camera.main;
+            canvas.worldCamera = GetViewerCamera();
             _panelRoot.AddComponent<CanvasScaler>();
             _panelRoot.AddComponent<GraphicRaycaster>();
             _panelRoot.AddComponent<TrackedDeviceGraphicRaycaster>();
@@ -523,7 +605,8 @@ namespace ARArmDetection.Facilitator
             var handDrag = gameObject.AddComponent<FacilitatorHandPanelDrag>();
             handDrag.Initialize(transform, handGrabCollider, handCursorRect, handCursor,
                 _nextButtonRect, _gazeDwellFill, NextStep,
-                _previousButtonRect, _previousHoldFill, PreviousStep);
+                _previousButtonRect, _previousHoldFill, PreviousStep,
+                ReleasePanelFromStatusAnchor);
 
             ApplyDepthIndependentPanelMaterial();
         }

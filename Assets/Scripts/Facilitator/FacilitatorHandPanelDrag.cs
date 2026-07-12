@@ -37,13 +37,15 @@ namespace ARArmDetection.Facilitator
         private RectTransform _previousButton;
         private UnityEngine.UI.Image _previousHoldFill;
         private Action _onPreviousStep;
+        private Action _onPanelGrabStarted;
         private float _previousHoldTimer;
         private bool _previousRequiresRelease;
 
         public void Initialize(Transform panel, BoxCollider grabCollider,
             RectTransform cursor, UnityEngine.UI.Image cursorImage,
             RectTransform nextButton, UnityEngine.UI.Image nextHoldFill, Action onNextStep,
-            RectTransform previousButton, UnityEngine.UI.Image previousHoldFill, Action onPreviousStep)
+            RectTransform previousButton, UnityEngine.UI.Image previousHoldFill, Action onPreviousStep,
+            Action onPanelGrabStarted = null)
         {
             _panel = panel;
             _grabCollider = grabCollider;
@@ -55,6 +57,7 @@ namespace ARArmDetection.Facilitator
             _previousButton = previousButton;
             _previousHoldFill = previousHoldFill;
             _onPreviousStep = onPreviousStep;
+            _onPanelGrabStarted = onPanelGrabStarted;
             BuildPointerLine();
             FindTrackedHands();
         }
@@ -179,12 +182,14 @@ namespace ARArmDetection.Facilitator
                 if (_activeHand == null && pinching && hasDirectHover &&
                     TryGetIndexTip(hand, out Vector3 grabTip))
                 {
+                    _onPanelGrabStarted?.Invoke();
                     _activeHand = hand;
                     _directGrab = true;
                     _grabOffset = _panel.position - grabTip;
                 }
                 else if (_activeHand == null && pinching && hasRayHover)
                 {
+                    _onPanelGrabStarted?.Invoke();
                     _activeHand = hand;
                     _directGrab = false;
                     _grabDistance = rayDistance;
