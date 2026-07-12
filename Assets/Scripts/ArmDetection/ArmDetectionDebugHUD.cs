@@ -13,6 +13,7 @@ namespace ARArmDetection
         [SerializeField] private PassthroughCameraSource _cameraSource;
         [SerializeField] private MediaPipeHandArmDetector _mediaPipeDetector;
         [SerializeField] private ArmDetectionManager     _manager;
+        [SerializeField] private NeedleAngleEstimator    _angleEstimator;
         [SerializeField] private float                   _distanceMeters = 1.5f;
 
         private Canvas    _canvas;
@@ -133,6 +134,7 @@ namespace ARArmDetection
                 $"Arm found : {(foundArm ? "<color=lime>YES</color>" : "no")}\n" +
                 $"Lock      : {(_manager != null ? (_manager.IsLocked ? $"<color=lime>{_manager.LockStatus}</color>" : _manager.LockStatus) : "—")}\n" +
                 $"Needle    : {(_manager != null ? _manager.NeedleStatus : "—")}\n" +
+                $"Angle     : {NeedleAngleText()}\n" +
                 $"DepthAxis : {(_manager != null ? _manager.DepthAxisStatus : "—")}\n" +
                 $"MaxArmKP  : {(_manager != null ? _manager.LastMaxArmScore.ToString("F3") : "—")}  " +
                 $"<color=grey>(lower threshold if < threshold)</color>\n" +
@@ -140,6 +142,16 @@ namespace ARArmDetection
                 $"<color={(_memRateMBs > 0.5f ? "red" : "lime")}>Δ{_memRateMBs:+0.00;-0.00} MB/s</color>  " +
                 $"GC {System.GC.GetTotalMemory(false) / 1048576f:F0} MB\n" +
                 $"Time      : {Time.time:F1}s";
+        }
+
+        private string NeedleAngleText()
+        {
+            if (_angleEstimator == null) return "— (no estimator)";
+            if (!_angleEstimator.HasAngle) return "no needle axis";
+            string verdict = _angleEstimator.IsAngleAcceptable
+                ? "<color=lime>ACCEPTABLE</color>"
+                : "<color=red>OUT OF RANGE</color>";
+            return $"{_angleEstimator.CurrentInsertionAngle:F1}° {verdict}";
         }
 
         private void BuildHUD()

@@ -26,19 +26,30 @@ Produced by the Training/ pipeline (see Training/README.md):
   python scripts/03_train.py --imgsz 320
   python scripts/04_export.py --weights runs/<run>/weights/best.pt
 
-DEPLOYED NEEDLE MODEL: arm-needle-pose-320.onnx  (== lucas.onnx, arm_needle_pose run)
-Assigned to NeedleDetector (Tools > AR Arm Detection > Add Needle Detector).
-Runs ALONGSIDE the arm model; only its needle class is read.
+DEPLOYED NEEDLE MODEL: best_theothergroup.onnx  (Group 2's "SyringePose" model,
+from the Jin-Rui branch). Assigned to NeedleDetector
+(Tools > AR Arm Detection > Add Needle Detector). Runs ALONGSIDE the arm model.
 
-  Input : [1, 3, 320, 320]
-  Output: [1, 18, 2100] features-first
-    0..3   box cx, cy, w, h     (input-pixel scale, letterboxed 320x320)
-    4..5   class scores         {0: arm, 1: needle}  -> NeedleDetector reads class 1
-    6..17  4 keypoints (kx,ky,v): needle kpt0 = tip (contact point), kpt3 = hub/plunger
-           (arm keypoints are untrained placeholders - the arm comes from arm-pose-320)
+  Input : [1, 3, 640, 640]
+  Output: [1, 17, 8400] features-first
+    0..3   box cx, cy, w, h     (input-pixel scale, letterboxed 640x640)
+    4      syringe score        (single class)
+    5..16  4 keypoints (kx,ky,v):
+           0 = NeedleTip (contact point), 1 = BarrelTop, 2 = BarrelBottom, 3 = Plunger
+           NeedleDetector uses kpt0 as tip and kpt3 as hub.
 
-  NeedleDetector defaults match this model: Num Classes = 2, Needle Class Id = 1.
-  For a future needle-only export ([1,11,N]) set Num Classes = 1, Needle Class Id = 0.
+  NeedleDetector config for this model: Num Classes = 1, Needle Class Id = 0,
+  confidence threshold ~0.15 (Group 2's tested value).
+
+  KNOWN LIMITATION (Group 2 finding): the Plunger keypoint scores only ~0.03-0.05
+  even on correct detections (tip/barrel run ~0.98), so the hub position is noisy.
+  NeedleDetection.HubConfidence exposes it; NeedleVisualizer hides the hub marker
+  below its threshold.
+
+INCOMPATIBLE (do NOT assign - crashes InferenceEngine with KeyNotFoundException '423'):
+  arm-needle-pose-320.onnx / lucas.onnx : 320, [1,18,N], {0: arm, 1: needle}
+  NeedleDetector's kill switch disables itself after 8 consecutive failures if one
+  of these is assigned; re-export with a compatible opset before trying again.
 
 LEGACY MODELS (kept for reference; class orders CONFLICT — check before use):
   best.onnx / best_v2.onnx              : 640, [1,18,N], {0: Syringe, 1: Arm}  (swapped!)

@@ -7,18 +7,22 @@ using UnityEngine.Rendering;
 namespace ARArmDetection
 {
     /// <summary>
-    /// Runs the NEEDLE pose model (YOLO11n-pose) exported from Ultralytics, alongside
-    /// the arm-only model in <see cref="CustomArmDetector"/>. Only the needle class is
-    /// read from it — arms keep coming from the (better) dedicated arm model.
+    /// Runs the NEEDLE/SYRINGE pose model (YOLO11n-pose) exported from Ultralytics,
+    /// alongside the arm-only model in <see cref="CustomArmDetector"/>.
     ///
-    /// Default layout matches Assets/Models/arm-needle-pose-320.onnx (== lucas.onnx),
-    /// features-first [1, 18, N]:
+    /// Default layout matches Assets/Models/best_theothergroup.onnx (Group 2's
+    /// "SyringePose" model from the Jin-Rui branch — the one needle export that
+    /// actually runs in InferenceEngine; arm-needle-pose-320.onnx throws
+    /// KeyNotFoundException '423'). Features-first [1, 17, 8400] at 640x640:
     ///   0..3   box cx, cy, w, h   (input-pixel scale, letterboxed)
-    ///   4..5   class scores       {0: arm, 1: needle}
-    ///   6..17  4 kpts (kx,ky,v)   needle: kpt0 = tip (contact point), kpt3 = hub/plunger
-    /// The tip is always kpt0 and the hub the LAST keypoint, so a future needle-only
-    /// export (e.g. [1,11,N]: 1 class, 2 kpts) works by setting Num Classes = 1 and
-    /// Needle Class Id = 0 — no code change.
+    ///   4      syringe score      (single class)
+    ///   5..16  4 kpts (kx,ky,v)   0 = NeedleTip, 1 = BarrelTop, 2 = BarrelBottom, 3 = Plunger
+    /// The tip is always kpt0 and the hub/plunger the LAST keypoint, so other exports
+    /// (2-class [1,18,N], 2-kpt [1,11,N]) work by adjusting Num Classes / Needle Class Id.
+    ///
+    /// NOTE (from Group 2's testing): the Plunger keypoint scores ~0.03-0.05 even on
+    /// otherwise-correct detections (tip/barrel run ~0.98). Its position is exposed with
+    /// its confidence (NeedleDetection.HubConfidence) so consumers can gate on it.
     ///
     /// Preprocessing and scheduling mirror CustomArmDetector exactly: the input size is
     /// read from the ONNX itself, frames are letterboxed (aspect-fit + Ultralytics gray
@@ -32,19 +36,19 @@ namespace ARArmDetection
         [SerializeField] private BackendType _backend = BackendType.GPUCompute;
         [Tooltip("Only used when the model has a dynamic input shape. Static ONNX inputs " +
                  "(all Ultralytics exports) override this with the model's own size.")]
-        [SerializeField] private int _inputSize = 320;
+        [SerializeField] private int _inputSize = 640;
         [Tooltip("Quantize model weights to FP16 at load. Halves weight memory and is faster on the " +
                  "Quest GPU with no practical accuracy loss for this model.")]
         [SerializeField] private bool _quantizeToFp16 = true;
 
         [Header("Output layout")]
-        [Tooltip("Number of classes in the assigned model's output. arm-needle-pose-320.onnx has 2 " +
-                 "(arm, needle); a needle-only export would have 1. Keypoint count is derived from " +
-                 "this: K = (features - 4 - numClasses) / 3.")]
-        [SerializeField, Range(1, 4)] private int _numClasses = 2;
-        [Tooltip("Which class index is the needle in the assigned model. arm-needle-pose-320.onnx: " +
-                 "{0: arm, 1: needle} -> 1. A needle-only export -> 0.")]
-        [SerializeField] private int _needleClassId = 1;
+        [Tooltip("Number of classes in the assigned model's output. best_theothergroup.onnx " +
+                 "(SyringePose) has 1 (syringe). Keypoint count is derived from this: " +
+                 "K = (features - 4 - numClasses) / 3.")]
+        [SerializeField, Range(1, 4)] private int _numClasses = 1;
+        [Tooltip("Which class index is the needle/syringe in the assigned model. " +
+                 "best_theothergroup.onnx (single class) -> 0.")]
+        [SerializeField] private int _needleClassId = 0;
 
         [Header("Scheduling (frame-rate vs detection latency)")]
         [Tooltip("How many model layers to dispatch per rendered frame. Spreads the GPU cost of one " +
@@ -61,7 +65,9 @@ namespace ARArmDetection
         [SerializeField] private float _workerRecycleSeconds = 25f;
 
         [Header("Filtering")]
-        [SerializeField, Range(0f, 1f)] private float _confidenceThreshold = 0.4f;
+        [Tooltip("Group 2 ran the SyringePose model at 0.15; typical true detections score 0.6-0.8 " +
+                 "but drop at steep viewing angles.")]
+        [SerializeField, Range(0f, 1f)] private float _confidenceThreshold = 0.15f;
 
         private Model _model;
         private Worker _worker;
@@ -506,10 +512,12 @@ namespace ARArmDetection
             {
                 ImageBounds = bounds,
                 Confidence = bestScore,
-                // Labeling convention: kpt0 = tip (the contact point), the LAST kpt = hub.
-                // Holds for both the 4-kpt combined model and a 2-kpt needle-only export.
+                // Labeling convention: kpt0 = tip (the contact point), the LAST kpt = hub/plunger.
+                // Holds for the SyringePose 4-kpt model and a 2-kpt needle-only export alike.
                 TipImage = ReadKeypoint(data, shape, bestRow, kptOffset, 0, featuresFirst, imageWidth, imageHeight),
                 HubImage = ReadKeypoint(data, shape, bestRow, kptOffset, keypointCount - 1, featuresFirst, imageWidth, imageHeight),
+                TipConfidence = ReadFeature(data, shape, bestRow, kptOffset + 2, featuresFirst),
+                HubConfidence = ReadFeature(data, shape, bestRow, kptOffset + 2 + (keypointCount - 1) * 3, featuresFirst),
             };
             _hasLatest = true;
         }
