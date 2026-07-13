@@ -1,3 +1,4 @@
+using Unity.VisualScripting;
 using UnityEngine;
 
 public class SyringeVisualizer : MonoBehaviour
@@ -11,8 +12,8 @@ public class SyringeVisualizer : MonoBehaviour
     [SerializeField] private Transform[] keyPointLabels = new Transform[4];
     
     [Header("Physical Constraints")]
-    [Tooltip("Approximate distance in front of headset face (meters)")]
-    [SerializeField] private float estimatedDistance = 0.45f;
+    [Tooltip("Fallback approximate distance in front of headset face (meters)")]
+    [SerializeField] private float estimatedDistance = 0.30f;
 
     [Header("Per-Keypoint Confidence")]
     [Tooltip("A sphere is only shown/moved when its OWN keypoint confidence is at least this - " +
@@ -24,6 +25,7 @@ public class SyringeVisualizer : MonoBehaviour
     [Range(0f, 1f)]
     [SerializeField] private float _keypointConfidenceThreshold = 0.02f;
     private LineRenderer _lineRenderer;
+    private Transform _mainCameraTransform;
 
     void Awake()
     {
@@ -37,6 +39,17 @@ public class SyringeVisualizer : MonoBehaviour
         {
             _lineRenderer.material = new Material(Shader.Find("Sprites/Default"));
         }
+
+        if (Camera.main != null)
+        {
+            _mainCameraTransform = Camera.main.transform;
+        }
+    }
+
+    void Start()
+    {
+        if (detector == null) detector = FindAnyObjectByType<CustomSyringeDetector>();
+        if (angleEstimator == null) angleEstimator = FindAnyObjectByType<SyringeAngleEstimator>();
     }
 
     // Update is called once per frame
@@ -47,24 +60,25 @@ public class SyringeVisualizer : MonoBehaviour
         var cameraSource = detector.cameraSourceComponent;
         if (cameraSource == null) return;
 
+        if (!detector.IsSyringeDetected)
+        {
+            ToggleVisuals(false);
+            return;
+        }
+
+        float operationalDepth = CalculateDynamicDepth();
+
         float camWidth = cameraSource.Width > 0 ? cameraSource.Width : 640f;
         float camHeight = cameraSource.Height > 0 ? cameraSource.Height : 640f;
 
-        bool allPointsTracking = true;
+        _lineRenderer.enabled = true;
 
         for (int j = 0; j < 4; j++)
         {
             if (keyPointLabels[j] == null) continue;
 
-            bool shouldShow = detector.IsSyringeDetected && detector.KeypointConfidences[j] >= _keypointConfidenceThreshold;
-            keyPointLabels[j].gameObject.SetActive(shouldShow);
-
-            if (!shouldShow)
-            {
-                allPointsTracking = false;
-                continue;
-            }
-            ;
+            // Make the sphere visible since the syringe itself is detected
+            keyPointLabels[j].gameObject.SetActive(true);
 
             // Recover the normalized coordinate pairs
             Vector2 normalizedKpt = detector.NormalizedKeypoints[j];
@@ -74,7 +88,7 @@ public class SyringeVisualizer : MonoBehaviour
             float mappedY = normalizedKpt.y * camHeight;
 
             // Project out into true 3D spatial coordinate vectors
-            Vector3 worldPos = cameraSource.ImagePointToWorld(new Vector2(mappedX, mappedY), estimatedDistance);
+            Vector3 worldPos = cameraSource.ImagePointToWorld(new Vector2(mappedX, mappedY), operationalDepth);
 
             // Update the position of the corresponding colored sphere
             keyPointLabels[j].position = worldPos;
@@ -83,20 +97,51 @@ public class SyringeVisualizer : MonoBehaviour
             _lineRenderer.SetPosition(j, worldPos);
         }
 
-        if (allPointsTracking && detector.IsSyringeDetected)
+        if (angleEstimator != null)
         {
-            _lineRenderer.enabled = true;
-
-            if (angleEstimator != null)
-            {
-                Color lineColor = angleEstimator.IsAngleAcceptable ? Color.green : Color.red;
-                _lineRenderer.startColor = lineColor;
-                _lineRenderer.endColor = lineColor;
-            }
+            Color lineColor = angleEstimator.IsAngleAcceptable ? Color.green : Color.red;
+            _lineRenderer.startColor = lineColor;
+            _lineRenderer.endColor = lineColor;
         }
         else
         {
-            _lineRenderer.enabled = false;
+            // Default color if the estimator script isn't linked yet
+            _lineRenderer.startColor = Color.white;
+            _lineRenderer.endColor = Color.white;
         }
+    }
+    
+    private float CalculateDynamicDepth()
+    {
+        if (_mainCameraTransform == null && Camera.main != null)
+        {
+            _mainCameraTransform = Camera.main.transform;
+        }
+        
+        if (_mainCameraTransform == null) return estimatedDistance;
+
+        GameObject handTrackingTarget = GameObject.Find("MediaPipeHandDetector");
+
+        if (handTrackingTarget != null)
+        {
+            float calculatedDistance = Vector3.Distance(_mainCameraTransform.position, handTrackingTarget.transform.position);
+            if (calculatedDistance > 0.15f)
+            {
+                return calculatedDistance;
+            }
+        }
+        return estimatedDistance;
+    }
+
+    private void ToggleVisuals(bool state)
+    {
+        for (int j = 0; j < 4; j++)
+        {
+            if (keyPointLabels[j] != null) 
+            {
+                keyPointLabels[j].gameObject.SetActive(state);
+            }
+        }
+        _lineRenderer.enabled = state;
     }
 }

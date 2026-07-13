@@ -45,9 +45,18 @@ public class SyringeDebugHUD : MonoBehaviour
         _hudText.alignment = TextAnchor.UpperLeft;
     }
 
+    void Start()
+    {
+        if (detector == null) detector = FindAnyObjectByType<CustomSyringeDetector>();
+        if (angleEstimator == null) angleEstimator = FindAnyObjectByType<SyringeAngleEstimator>();
+    }
+
     private void LateUpdate()
     {
-        // 4. Anchor the debug panel directly in front of your head/camera view space
+        if (detector == null) detector = FindAnyObjectByType<CustomSyringeDetector>();
+        if (angleEstimator == null) angleEstimator = FindAnyObjectByType<SyringeAngleEstimator>();
+
+        // Anchor the debug panel directly in front of your head/camera view space
         var cam = Camera.main;
         if (cam == null) return;
 

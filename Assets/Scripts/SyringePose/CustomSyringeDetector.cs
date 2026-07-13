@@ -1,6 +1,6 @@
 using UnityEngine;
 using Unity.InferenceEngine;
-
+using UnityEngine.Android;
 
 public class CustomSyringeDetector : MonoBehaviour
 {
@@ -44,19 +44,37 @@ public class CustomSyringeDetector : MonoBehaviour
 
     // Start is called once before the first execution of Update after the MonoBehaviour is created
     void Start()
-    {
-        // Load the neural network model
-        if (modelAsset != null)
+    {   
+        if (!Permission.HasUserAuthorizedPermission(Permission.Camera))
         {
-            var model = ModelLoader.Load(modelAsset);
-            _worker = new Worker(model, _backend);
-            _inputTensor = new Tensor<float>(new TensorShape(1, 3, _inputSize, _inputSize));
-            _processedRT = new RenderTexture(_inputSize, _inputSize, 0, RenderTextureFormat.ARGB32);
-            _processedRT.Create();
+            Permission.RequestUserPermission(Permission.Camera);
         }
-        else
+
+        // Auto-discover the Camera Passthrough source if it wasn't dropped in the inspector
+        if (cameraSourceComponent == null)
         {
-            Debug.LogError("CustomSyringeDetector: Missing Model Asset! Please attach your .onnx model.");
+            cameraSourceComponent = Object.FindAnyObjectByType<ARArmDetection.PassthroughCameraSource>();
+        }
+
+        try 
+        {
+            if (modelAsset != null)
+            {
+                var model = ModelLoader.Load(modelAsset);
+                _worker = new Worker(model, _backend);
+                _inputTensor = new Tensor<float>(new TensorShape(1, 3, _inputSize, _inputSize));
+                _processedRT = new RenderTexture(_inputSize, _inputSize, 0, RenderTextureFormat.ARGB32);
+                _processedRT.Create();
+                Debug.Log("CustomSyringeDetector: Neural Engine initialized successfully.");
+            }
+            else
+            {
+                Debug.LogError("CustomSyringeDetector: Missing Model Asset! Please attach your .onnx model.");
+            }
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"CustomSyringeDetector: Neural Engine crashed during initialization! Error details: {e.Message}");
         }
     }
 
