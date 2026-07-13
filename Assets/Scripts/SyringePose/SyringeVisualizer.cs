@@ -54,60 +54,65 @@ public class SyringeVisualizer : MonoBehaviour
 
     // Update is called once per frame
     void Update()
-    {
+    {   
+        // 1. Runtime fallback check to repair connection chains dynamically
+        if (detector == null) detector = FindAnyObjectByType<CustomSyringeDetector>();
+        if (angleEstimator == null) angleEstimator = FindAnyObjectByType<SyringeAngleEstimator>();
         if (detector == null) return;
 
         var cameraSource = detector.cameraSourceComponent;
         if (cameraSource == null) return;
-
-        if (!detector.IsSyringeDetected)
-        {
-            ToggleVisuals(false);
-            return;
-        }
 
         float operationalDepth = CalculateDynamicDepth();
 
         float camWidth = cameraSource.Width > 0 ? cameraSource.Width : 640f;
         float camHeight = cameraSource.Height > 0 ? cameraSource.Height : 640f;
 
-        _lineRenderer.enabled = true;
-
-        for (int j = 0; j < 4; j++)
+        // 2. Active tracking projection math execution block
+        if (detector.IsSyringeDetected)
         {
-            if (keyPointLabels[j] == null) continue;
+            _lineRenderer.enabled = true;
 
-            // Make the sphere visible since the syringe itself is detected
-            keyPointLabels[j].gameObject.SetActive(true);
+            for (int j = 0; j < 4; j++)
+            {
+                if (keyPointLabels[j] == null) continue;
 
-            // Recover the normalized coordinate pairs
-            Vector2 normalizedKpt = detector.NormalizedKeypoints[j];
+                // Keep tracking label spheres active simultaneously with the scene state
+                keyPointLabels[j].gameObject.SetActive(true);
 
-            // Denormalize into active hardware camera image layout bounds
-            float mappedX = normalizedKpt.x * camWidth;
-            float mappedY = normalizedKpt.y * camHeight;
+                Vector2 normalizedKpt = detector.NormalizedKeypoints[j];
 
-            // Project out into true 3D spatial coordinate vectors
-            Vector3 worldPos = cameraSource.ImagePointToWorld(new Vector2(mappedX, mappedY), operationalDepth);
+                float mappedX = normalizedKpt.x * camWidth;
+                float mappedY = normalizedKpt.y * camHeight;
 
-            // Update the position of the corresponding colored sphere
-            keyPointLabels[j].position = worldPos;
+                Vector3 worldPos = cameraSource.ImagePointToWorld(new Vector2(mappedX, mappedY), operationalDepth);
 
-            // Draw the action line point right where the sphere is shown
-            _lineRenderer.SetPosition(j, worldPos);
-        }
+                keyPointLabels[j].position = worldPos;
+                _lineRenderer.SetPosition(j, worldPos);
+            }
 
-        if (angleEstimator != null)
-        {
-            Color lineColor = angleEstimator.IsAngleAcceptable ? Color.green : Color.red;
-            _lineRenderer.startColor = lineColor;
-            _lineRenderer.endColor = lineColor;
+            if (angleEstimator != null)
+            {
+                Color lineColor = angleEstimator.IsAngleAcceptable ? Color.green : Color.red;
+                _lineRenderer.startColor = lineColor;
+                _lineRenderer.endColor = lineColor;
+            }
+            else
+            {
+                _lineRenderer.startColor = Color.white;
+                _lineRenderer.endColor = Color.white;
+            }
         }
         else
         {
-            // Default color if the estimator script isn't linked yet
-            _lineRenderer.startColor = Color.white;
-            _lineRenderer.endColor = Color.white;
+            // Turn off the line when nothing is detected, but keep target spheres updating layout properties
+            if (_lineRenderer != null) _lineRenderer.enabled = false;
+            
+            // Optional: Hide the tracking dots when the model completely loses tracking focus
+            for (int j = 0; j < 4; j++)
+            {
+                if (keyPointLabels[j] != null) keyPointLabels[j].gameObject.SetActive(false);
+            }
         }
     }
 

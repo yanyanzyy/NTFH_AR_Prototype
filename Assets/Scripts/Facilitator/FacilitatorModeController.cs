@@ -727,6 +727,11 @@ namespace ARArmDetection.Facilitator
         private static void EnsureEventSystem()
         {
             if (EventSystem.current != null) return;
+            if (UnityEngine.Object.FindAnyObjectByType<UnityEngine.XR.Interaction.Toolkit.UI.XRUIInputModule>() != null)
+            {
+                return;
+            }
+
             var go = new GameObject("XR EventSystem", typeof(EventSystem), typeof(XRUIInputModule));
             DontDestroyOnLoad(go);
         }

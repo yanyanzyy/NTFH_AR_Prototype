@@ -173,6 +173,13 @@ public class CustomSyringeDetector : MonoBehaviour
                 NormalizedKeypoints[j] = new Vector2(pixelX / _inputSize, pixelY / _inputSize);
                 KeypointConfidences[j] = kptConf;
             }
+            
+            // if a step requires an external syringe placement verification hook.
+            var activeFacilitator = Object.FindAnyObjectByType<ARArmDetection.Facilitator.FacilitatorModeController>();
+            if (activeFacilitator != null)
+            {
+                activeFacilitator.SignalCompletion("SyringeDetected");
+            }
         }
         else
         {
