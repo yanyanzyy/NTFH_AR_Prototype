@@ -98,10 +98,22 @@ namespace ARArmDetection
                  "Frozen means: ignore ALL detections and hold the world-anchored pose until " +
                  "UNLOCK ARM / controller B releases it.")]
         [SerializeField] private bool _freezeWhileLocked = true;
-        [Tooltip("How long after acquiring the lock detections keep refining the pose (seconds) " +
-                 "before it freezes. Lets the smoothed world pose settle onto the arm first. " +
+        [Tooltip("MINIMUM refinement time after acquiring the lock (seconds) before the pose can " +
+                 "freeze. Lets the smoothed world pose settle onto the arm first. " +
                  "0 = freeze on the very first locked pose.")]
         [SerializeField] private float _lockRefineSeconds = 1.5f;
+        [Tooltip("Also require the HEADSET to move sideways during refinement before freezing. " +
+                 "Depth and centre derived from a 2D box are viewpoint-biased, so a pose frozen " +
+                 "from one angle lands differently than from another; averaging detections while " +
+                 "the head moves cancels most of that bias. The user just steps a little around " +
+                 "the arm after locking (the lock status shows progress).")]
+        [SerializeField] private bool _requireViewpointDiversity = true;
+        [Tooltip("How far (m) the head must move from its lock-time position before freezing. " +
+                 "~0.35 m is half a step sideways.")]
+        [SerializeField] private float _refineHeadBaselineMeters = 0.35f;
+        [Tooltip("Safety valve: freeze anyway after this many refinement seconds even if the head " +
+                 "never moved. 0 = wait for the baseline indefinitely.")]
+        [SerializeField] private float _maxRefineSeconds = 12f;
         [Tooltip("Completely stop running the arm model while the lock is frozen. A frozen lock " +
                  "ignores every detection anyway, so inference is pure waste — running it forever " +
                  "heats the headset until it throttles (progressive lag) and can crash the app. " +
@@ -262,6 +274,8 @@ namespace ARArmDetection
         private float _acquireGapSeconds;
         private bool _freshResultThisFrame;
         private float _lockAcquiredTime;
+        private Vector3 _lockHeadStartPos;
+        private float _refineHeadBaseline;
         private float _lockLostSeconds;
         private bool _hasStableArmImage;
         private Side _stableArmSide;
@@ -450,7 +464,16 @@ namespace ARArmDetection
             if (_lockState == LockState.Locked)
             {
                 float refineElapsed = Time.time - _lockAcquiredTime;
-                bool frozen = _freezeWhileLocked && refineElapsed >= _lockRefineSeconds;
+
+                // Track how far the head has moved since the lock was acquired. The baseline is
+                // monotonic (max displacement), so freezing is stable once the bar is met.
+                float headDist = Vector3.Distance(_cameraSource.CameraPose.position, _lockHeadStartPos);
+                if (headDist > _refineHeadBaseline) _refineHeadBaseline = headDist;
+
+                bool baselineMet = !_requireViewpointDiversity
+                                   || _refineHeadBaseline >= _refineHeadBaselineMeters
+                                   || (_maxRefineSeconds > 0f && refineElapsed >= _maxRefineSeconds);
+                bool frozen = _freezeWhileLocked && refineElapsed >= _lockRefineSeconds && baselineMet;
 
                 if (frozen)
                 {
@@ -466,9 +489,13 @@ namespace ARArmDetection
                 {
                     _lockLostSeconds = 0f;
                     StabilizeArmOnlyCandidate(ref best, selectedSide, selectedIdx);
-                    LockStatus = _freezeWhileLocked
-                        ? $"Locked (refining {refineElapsed:F1}/{_lockRefineSeconds:F1}s)"
-                        : "Locked (tracking)";
+                    if (!_freezeWhileLocked)
+                        LockStatus = "Locked (tracking)";
+                    else if (_requireViewpointDiversity && _refineHeadBaseline < _refineHeadBaselineMeters)
+                        LockStatus = $"Locked (refining — step around the arm: " +
+                                     $"{_refineHeadBaseline:F2}/{_refineHeadBaselineMeters:F2} m)";
+                    else
+                        LockStatus = $"Locked (refining {refineElapsed:F1}/{_lockRefineSeconds:F1}s)";
                     renderOverlay = true;
                 }
                 else
@@ -1027,6 +1054,8 @@ namespace ARArmDetection
                 _lockState = LockState.Locked;
                 _lockLostSeconds = 0f;
                 _lockAcquiredTime = Time.time;
+                _lockHeadStartPos = _cameraSource.CameraPose.position;
+                _refineHeadBaseline = 0f;
                 Debug.Log($"[ArmManager] Target lock acquired at {mid} after {_acquireFrameCount} consistent results.");
             }
             else
