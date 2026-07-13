@@ -14,6 +14,7 @@ namespace ARArmDetection
         [SerializeField] private MediaPipeHandArmDetector _mediaPipeDetector;
         [SerializeField] private ArmDetectionManager     _manager;
         [SerializeField] private NeedleAngleEstimator    _angleEstimator;
+        [SerializeField] private InjectionSequenceEvaluator _injectionEvaluator;
         [SerializeField] private float                   _distanceMeters = 1.5f;
 
         private Canvas    _canvas;
@@ -135,6 +136,7 @@ namespace ARArmDetection
                 $"Lock      : {(_manager != null ? (_manager.IsLocked ? $"<color=lime>{_manager.LockStatus}</color>" : _manager.LockStatus) : "—")}\n" +
                 $"Needle    : {(_manager != null ? _manager.NeedleStatus : "—")}\n" +
                 $"Angle     : {NeedleAngleText()}\n" +
+                $"Inject    : {InjectionText()}\n" +
                 $"DepthAxis : {(_manager != null ? _manager.DepthAxisStatus : "—")}\n" +
                 $"MaxArmKP  : {(_manager != null ? _manager.LastMaxArmScore.ToString("F3") : "—")}  " +
                 $"<color=grey>(lower threshold if < threshold)</color>\n" +
@@ -142,6 +144,18 @@ namespace ARArmDetection
                 $"<color={(_memRateMBs > 0.5f ? "red" : "lime")}>Δ{_memRateMBs:+0.00;-0.00} MB/s</color>  " +
                 $"GC {System.GC.GetTotalMemory(false) / 1048576f:F0} MB\n" +
                 $"Time      : {Time.time:F1}s";
+        }
+
+        private string InjectionText()
+        {
+            if (_injectionEvaluator == null) return "— (no evaluator)";
+            string color = _injectionEvaluator.CurrentStage switch
+            {
+                InjectionSequenceEvaluator.Stage.Success => "lime",
+                InjectionSequenceEvaluator.Stage.Idle    => "grey",
+                _                                        => "orange",
+            };
+            return $"<color={color}>[{_injectionEvaluator.CurrentStage}]</color> {_injectionEvaluator.StatusText}";
         }
 
         private string NeedleAngleText()

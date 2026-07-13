@@ -229,6 +229,81 @@ namespace ARArmDetection.EditorTools
                       "NeedleAngleEstimator + NeedleVisualizer.");
         }
 
+        /// <summary>
+        /// Adds (or re-wires) the InjectionSequenceEvaluator — the staged
+        /// contact → vein spot → angle → depth assessment — on the VeinSystem object,
+        /// next to the VeinMap it queries. Safe to run again.
+        /// </summary>
+        [MenuItem("Tools/AR Arm Detection/Add Injection Sequence Evaluator")]
+        public static void AddInjectionSequenceEvaluator()
+        {
+            var veinMap = Object.FindFirstObjectByType<VeinMap>();
+            if (veinMap == null)
+            {
+                Debug.LogError("[ArmDetection] No VeinMap found in the scene. Set up the VeinSystem " +
+                               "object (VeinMap + InjectionSiteDetector + feedback components) first.");
+                return;
+            }
+
+            var host = veinMap.gameObject;
+            var evaluator = host.GetComponent<InjectionSequenceEvaluator>();
+            if (evaluator == null)
+            {
+                evaluator = Undo.AddComponent<InjectionSequenceEvaluator>(host);
+            }
+
+            var manager = Object.FindFirstObjectByType<ArmDetectionManager>();
+            var angleEstimator = Object.FindFirstObjectByType<NeedleAngleEstimator>();
+
+            if (manager != null) WireReference(evaluator, "_armManager", manager);
+            else Debug.LogWarning("[ArmDetection] No ArmDetectionManager in scene — wire _armManager manually.");
+            WireReference(evaluator, "_veinMap", veinMap);
+
+            // VeinMap needs the overlay to resolve prefab-authored vein paths (Option A).
+            var overlay = Object.FindFirstObjectByType<ArmOverlay>();
+            if (overlay != null) WireReference(veinMap, "_overlay", overlay);
+            if (angleEstimator != null) WireReference(evaluator, "_angleEstimator", angleEstimator);
+            else Debug.LogWarning("[ArmDetection] No NeedleAngleEstimator in scene — run " +
+                                  "'Add Needle Detector' first, then re-run this.");
+
+            var hud = Object.FindFirstObjectByType<ArmDetectionDebugHUD>();
+            if (hud != null) WireReference(hud, "_injectionEvaluator", evaluator);
+
+            EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            Selection.activeGameObject = host;
+            Debug.Log("[ArmDetection] InjectionSequenceEvaluator wired on '" + host.name + "' " +
+                      "(contact -> vein spot -> angle -> depth).");
+        }
+
+        /// <summary>
+        /// Adds the runtime vein path visualizer (LineRenderers in the headset) so the
+        /// prefab-authored vein waypoints can be verified on device. VeinMap's gizmos are
+        /// editor-only. Safe to run again; also (re)wires VeinMap._overlay.
+        /// </summary>
+        [MenuItem("Tools/AR Arm Detection/Add Vein Path Visualizer")]
+        public static void AddVeinPathVisualizer()
+        {
+            var veinMap = Object.FindFirstObjectByType<VeinMap>();
+            if (veinMap == null)
+            {
+                Debug.LogError("[ArmDetection] No VeinMap found in the scene. Set up the VeinSystem object first.");
+                return;
+            }
+
+            var host = veinMap.gameObject;
+            var visualizer = host.GetComponent<VeinPathVisualizer>();
+            if (visualizer == null) visualizer = Undo.AddComponent<VeinPathVisualizer>(host);
+            WireReference(visualizer, "_veinMap", veinMap);
+
+            var overlay = Object.FindFirstObjectByType<ArmOverlay>();
+            if (overlay != null) WireReference(veinMap, "_overlay", overlay);
+            else Debug.LogWarning("[ArmDetection] No ArmOverlay found — prefab vein paths won't resolve.");
+
+            EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            Selection.activeGameObject = host;
+            Debug.Log("[ArmDetection] VeinPathVisualizer added — vein paths render as coloured lines once the arm locks.");
+        }
+
         [MenuItem("Tools/AR Arm Detection/Add MediaPipe Hand Detector")]
         public static void AddMediaPipeHandDetector()
         {

@@ -139,8 +139,9 @@ namespace ARArmDetection
         /// <summary>
         /// Returns the signed distance from <paramref name="point"/> to the surface of the arm
         /// cylinder (negative = inside). Also outputs the nearest point on the arm surface.
+        /// Public so InjectionSequenceEvaluator shares the same arm-cylinder model.
         /// </summary>
-        private static float DistanceToArmSurface(Vector3 point,
+        public static float DistanceToArmSurface(Vector3 point,
                                                    Vector3 shoulder, Vector3 wrist,
                                                    float   armRadius,
                                                    out Vector3 surfacePoint)

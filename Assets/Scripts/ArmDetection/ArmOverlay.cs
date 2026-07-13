@@ -71,6 +71,10 @@ namespace ARArmDetection
         [Tooltip("Show the debug quad alongside the 3D model for alignment checking.")]
         [SerializeField] private bool _showDebugQuadAlongsideModel = false;
 
+        /// <summary>Root of the instantiated 3D arm model (null when no prefab assigned or
+        /// before Awake). VeinMap reads prefab-authored vein paths from under this.</summary>
+        public Transform ModelRoot => _model;
+
         // ── Private state ──────────────────────────────────────────────────────────────
         private Transform _model;
         private Transform _quad;

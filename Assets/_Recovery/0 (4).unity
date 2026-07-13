@@ -2377,7 +2377,6 @@ GameObject:
   - component: {fileID: 1668819006}
   - component: {fileID: 1668819005}
   - component: {fileID: 1668819009}
-  - component: {fileID: 1668819010}
   m_Layer: 0
   m_Name: VeinSystem
   m_TagString: Untagged
@@ -2516,20 +2515,6 @@ MonoBehaviour:
   _contactLossGraceSeconds: 0.4
   _minDepthMeters: 0.002
   _maxDepthMeters: 0.015
---- !u!114 &1668819010
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1668819003}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 62b1be77876b2ce408e6f631168a34ff, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.VeinPathVisualizer
-  _veinMap: {fileID: 1668819008}
-  _lineWidthMeters: 0.004
 --- !u!1 &1823723402
 GameObject:
   m_ObjectHideFlags: 0

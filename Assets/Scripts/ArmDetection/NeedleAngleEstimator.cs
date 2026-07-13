@@ -31,6 +31,9 @@ namespace ARArmDetection
         /// <summary>True while a vision needle is tracked and its axis is long enough to measure.</summary>
         public bool HasAngle { get; private set; }
 
+        public float MinAcceptableAngle => _minAcceptableAngle;
+        public float MaxAcceptableAngle => _maxAcceptableAngle;
+
         private void Update()
         {
             HasAngle = false;
