@@ -128,7 +128,6 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 155282095}
-  - component: {fileID: 155282096}
   m_Layer: 0
   m_Name: SyringePosePrototype
   m_TagString: Untagged
@@ -154,68 +153,6 @@ Transform:
   - {fileID: 421273235}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &155282096
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 155282094}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 42bf42dbd794f4a94951e240f33c6afb, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmDetectionManager
-  _cameraSource: {fileID: 0}
-  _customArmDetector: {fileID: 0}
-  _mediaPipeDetector: {fileID: 0}
-  _wearerFilter: {fileID: 0}
-  _overlay: {fileID: 0}
-  _useCustomArmDetector: 1
-  _fallbackToMediaPipe: 0
-  _needleDetector: {fileID: 0}
-  _runNeedleOnlyWhileLocked: 1
-  _needleWorldSmoothing: 0.5
-  _needleLostAfterSeconds: 0.75
-  _manageMediaPipeLifecycle: 1
-  _mediaPipeActivateAfterSeconds: 2
-  _mediaPipePauseAfterSeconds: 2
-  _depthRaycaster: {fileID: 0}
-  _assumedArmLengthMeters: 0.5
-  _minPersonBboxPixels: 10
-  _minDepthMeters: 0.3
-  _maxDepthMeters: 8
-  _keypointConfidence: 0.01
-  _skipWearerFilterInArmOnlyMode: 1
-  _armOnlyStabilityRadiusPixels: 420
-  _armOnlyImageSmoothing: 0.8
-  _armOnlyWorldSmoothing: 0.9
-  _customDetectorEveryNFrames: 2
-  _acquireConsistentFrames: 4
-  _acquireRadiusMeters: 0.3
-  _acquireMinConfidence: 0.4
-  _acquireGapToleranceSeconds: 0.6
-  _lockGateRadiusMeters: 0.35
-  _lockGateGrowPerSecondLost: 0.25
-  _lockGateMaxRadiusMeters: 0.9
-  _autoUnlockAfterLostSeconds: 0
-  _freezeWhileLocked: 1
-  _lockRefineSeconds: 1.5
-  _suspendDetectionWhileFrozen: 1
-  _useDepthAxisEstimation: 0
-  _depthSampleGrid: 6
-  _swapDepthAxisEndpoints: 0
-  _normalizeDepthAxisLength: 1
-  _useFixedWorldAxis: 1
-  _fixedArmYawDegrees: 0
-  _fixedArmLengthMeters: 0.55
-  _stabilizeFixedAxisDepth: 1
-  _fixedAxisDepthSmoothing: 0.97
-  _swapFixedAxisEndpoints: 0
-  _fixedAxisDepthOffsetMeters: 0
-  _gcSweepIntervalSeconds: 30
-  _debugHUD: {fileID: 0}
-  _bypassWearerFilter: 1
 --- !u!1001 &227034121
 PrefabInstance:
   m_ObjectHideFlags: 0
@@ -3559,6 +3496,9 @@ MonoBehaviour:
   _autoUnlockAfterLostSeconds: 0
   _freezeWhileLocked: 1
   _lockRefineSeconds: 0
+  _requireViewpointDiversity: 1
+  _refineHeadBaselineMeters: 0.35
+  _maxRefineSeconds: 12
   _suspendDetectionWhileFrozen: 1
   _useDepthAxisEstimation: 0
   _depthSampleGrid: 6
