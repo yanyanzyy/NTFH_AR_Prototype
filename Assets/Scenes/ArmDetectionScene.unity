@@ -687,7 +687,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SyringeDebugHUD
   detector: {fileID: 1466963603}
-  angleEstimator: {fileID: 1416556385}
 --- !u!4 &421273235
 Transform:
   m_ObjectHideFlags: 0
@@ -1427,7 +1426,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: '::'
   detector: {fileID: 1466963603}
-  angleEstimator: {fileID: 1416556385}
+  angleEstimator: {fileID: 0}
   keyPointLabels:
   - {fileID: 1465489963}
   - {fileID: 432850686}
@@ -2713,8 +2712,6 @@ MonoBehaviour:
   _backend: 256
   _inputSize: 640
   _confidenceThreshold: 0.05
-  _inferenceInterval: 0.05
-  logDebugInfo: 1
   cameraSourceComponent: {fileID: 0}
 --- !u!1 &1511012890
 GameObject:
@@ -3047,6 +3044,8 @@ MonoBehaviour:
   _armManager: {fileID: 2062675444}
   _veinMap: {fileID: 1668819008}
   _angleEstimator: {fileID: 0}
+  _customSyringeDetector: {fileID: 1466963603}
+  _customSyringeAngleEstimator: {fileID: 1416556385}
   _armRadiusMeters: 0.0425
   _contactDistanceMeters: 0.015
   _contactDwellSeconds: 0.15

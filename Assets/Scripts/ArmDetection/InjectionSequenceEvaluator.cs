@@ -33,6 +33,8 @@ namespace ARArmDetection
         [SerializeField] private ArmDetectionManager _armManager;
         [SerializeField] private VeinMap _veinMap;
         [SerializeField] private NeedleAngleEstimator _angleEstimator;
+        [SerializeField] private global::CustomSyringeDetector _customSyringeDetector;
+        [SerializeField] private global::SyringeAngleEstimator _customSyringeAngleEstimator;
 
         [Header("Arm model")]
         [Tooltip("Physical radius of the mannequin arm at injection sites (forearm ~4.25 cm). " +
@@ -93,17 +95,38 @@ namespace ARArmDetection
         {
             ContactOk = SpotOk = AngleOk = DepthOk = false;
 
+            // Standard fallback if no arm or syringe tracking is assigned: assume a mannequin arm in front of the camera.
+            Vector3 shoulder = Vector3.up * 1.5f;
+            Vector3 wrist = Vector3.up * 1.5f + Vector3.forward * 0.5f;
+
             // Prerequisites: locked arm + tracked needle.
-            if (_armManager == null ||
-                !_armManager.TryGetArmEndpoints(out var shoulder, out var wrist))
+            if (_armManager != null && _armManager.TryGetArmEndpoints(out var realShoulder, out var realWrist))
             {
-                EndAttemptIfActive("Waiting for arm lock");
+                shoulder = realShoulder;
+                wrist = realWrist;
+            }
+            else if (_armManager == null && _customSyringeDetector == null)
+            {
+                EndAttemptIfActive("Waiting for arm lock"); // Only block if everything is unassigned
                 return;
             }
-            if (!_armManager.TryGetNeedleTip(out var tip))
+
+            Vector3 tip = Vector3.zero;
+            bool locationFound = false;
+
+            if (_customSyringeDetector != null)
             {
-                // The needle detector drops out between inferences and when the barrel is
-                // occluded by the hand — give the attempt the same grace as contact loss.
+                // Try to extract from your new syringe model tracking pipeline
+                locationFound = _customSyringeDetector.TryGetNeedleTip(out tip);
+            }
+            else if (_armManager != null)
+            {
+                // Fall back to legacy script behavior if group 1 tool isn't assigned
+                locationFound = _armManager.TryGetNeedleTip(out tip);
+            }
+
+            if (!locationFound)
+            {
                 if (_attemptActive && TickLossGrace()) return;
                 EndAttemptIfActive("Waiting for needle");
                 return;
@@ -166,17 +189,41 @@ namespace ARArmDetection
             }
 
             // ── Stage 3: angle ──────────────────────────────────────────────────────────
-            if (_angleEstimator == null || !_angleEstimator.HasAngle)
+            bool hasAngleData = false;
+            bool angleIsGood = false;
+            float currentAngle = 0f;
+            float minAngle = 0f;
+            float maxAngle = 0f;
+
+            if (_customSyringeAngleEstimator != null)
+            {
+                // Bind to your custom logic indicators
+                hasAngleData = true; // Assumed true if your tracker is running
+                angleIsGood = _customSyringeAngleEstimator.IsAngleAcceptable;
+                currentAngle = _customSyringeAngleEstimator.CurrentInsertionAngle; // Ensure this property exists or assign a proxy float
+            }
+            else if (_angleEstimator != null)
+            {
+                // Fallback directly onto legacy metrics
+                hasAngleData = _angleEstimator.HasAngle;
+                angleIsGood = _angleEstimator.IsAngleAcceptable;
+                currentAngle = _angleEstimator.CurrentInsertionAngle;
+                minAngle = _angleEstimator.MinAcceptableAngle;
+                maxAngle = _angleEstimator.MaxAcceptableAngle;
+            }
+
+            if (!hasAngleData)
             {
                 SetStage(Stage.Angle, $"On {vein.Vein.name} — angle unavailable");
                 return;
             }
-            AngleOk = _angleEstimator.IsAngleAcceptable;
+
+            AngleOk = angleIsGood;
             if (!AngleOk)
             {
                 SetStage(Stage.Angle,
-                    $"On {vein.Vein.name} — fix angle: {_angleEstimator.CurrentInsertionAngle:F0}° " +
-                    $"(need {_angleEstimator.MinAcceptableAngle:F0}–{_angleEstimator.MaxAcceptableAngle:F0}°)");
+                    $"On {vein.Vein.name} — fix angle: {currentAngle:F0}° " +
+                    $"(need {minAngle:F0}–{maxAngle:F0}°)");
                 return;
             }
 

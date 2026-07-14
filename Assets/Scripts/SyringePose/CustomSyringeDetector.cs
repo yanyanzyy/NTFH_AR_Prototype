@@ -20,6 +20,9 @@ public class CustomSyringeDetector : MonoBehaviour
     public bool IsSyringeDetected { get; private set; }
     public float HighestConfidence { get; private set; }
     public Vector2[] NormalizedKeypoints { get; private set; } = new Vector2[4];
+    public float[] KeypointConfidences { get; private set; } = new float[4];
+
+    private bool _wasSyringeDetectedLastFrame = false;
 
     // Start is called once before the first execution of Update after the MonoBehaviour is created
     void Start()
@@ -89,14 +92,28 @@ public class CustomSyringeDetector : MonoBehaviour
                 // Extract using features-first stride math
                 float pixelX = predictionData[(kptOffset + j * 3) * totalAnchors + bestAnchorIndex];
                 float pixelY = predictionData[(kptOffset + 1 + j * 3) * totalAnchors + bestAnchorIndex];
-
+                float kptConfidence = predictionData[(kptOffset + 2 + j * 3) * totalAnchors + bestAnchorIndex];
+                
                 // Save clean normalized 0.0 to 1.0 coordinates
                 NormalizedKeypoints[j] = new Vector2(pixelX / _inputSize, pixelY / _inputSize);
+                KeypointConfidences[j] = kptConfidence;
+            }
+
+            // Rising-edge detection: only signal completion when syringe is first detected
+            if (!_wasSyringeDetectedLastFrame)
+            {
+                var activeFacilitator = UnityEngine.Object.FindAnyObjectByType<ARArmDetection.Facilitator.FacilitatorModeController>();
+                if (activeFacilitator != null)
+                {
+                    activeFacilitator.SignalCompletion("SyringeDetected");
+                }
+                _wasSyringeDetectedLastFrame = true;
             }
         }
         else
         {
             IsSyringeDetected = false;
+            _wasSyringeDetectedLastFrame = false;
         }
     }
 
@@ -108,4 +125,40 @@ public class CustomSyringeDetector : MonoBehaviour
         _inputTensor?.Dispose();
         _inputTensor = null;
     }
+
+    /// <summary>
+    /// Provides a legacy mapping bridge for Group 1's InjectionSequenceEvaluator.
+    /// Maps your primary keypoint coordinate (Index 0: needle tip/syringe base entry) 
+    /// straight out into 3D world vectors.
+    /// </summary>
+public bool TryGetNeedleTip(out Vector3 syringeTipWorldPos)
+{
+    syringeTipWorldPos = Vector3.zero;
+    
+    // If no syringe is tracked or the primary structural keypoint confidence fails, return false
+    if (!IsSyringeDetected || NormalizedKeypoints == null || NormalizedKeypoints.Length == 0)
+    {
+        return false;
+    }
+    
+    if (cameraSourceComponent == null) return false;
+
+    // Utilize index 0 (or whichever keypoint represents your tip spatial orientation)
+    Vector2 tipKpt = NormalizedKeypoints[0]; 
+    float modelInputSize = 640f; 
+    
+    float operationalDepth = 0.30f; // Default safe fallback mapping depth
+    GameObject handTrackingTarget = GameObject.Find("MediaPipeHandDetector");
+    if (handTrackingTarget != null && Camera.main != null)
+    {
+        float calculatedDistance = Vector3.Distance(Camera.main.transform.position, handTrackingTarget.transform.position);
+        if (calculatedDistance > 0.15f) operationalDepth = calculatedDistance;
+    }
+
+    float mappedX = tipKpt.x * modelInputSize;
+    float mappedY = tipKpt.y * modelInputSize;
+
+    syringeTipWorldPos = cameraSourceComponent.ImagePointToWorld(new Vector2(mappedX, mappedY), operationalDepth);
+    return true;
+}
 }
