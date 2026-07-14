@@ -10,18 +10,6 @@ public class SyringeDebugHUD : MonoBehaviour
     private GameObject _panelRoot;
     private Text _hudText;
 
-    // Rebuilding the rich-text block (StringBuilder + string allocs + UI Text re-layout)
-    // every frame feeds the GC and costs frame time on Quest for no visible benefit -
-    // refresh the text at ~5 Hz instead. The panel transform still follows the head
-    // every frame so it doesn't visibly lag behind.
-    private const float TextRefreshInterval = 0.2f;
-    private float _nextTextRefreshTime;
-    private readonly System.Text.StringBuilder _sb = new System.Text.StringBuilder(1024);
-
-    // FindAnyObjectByType is a scene scan - retry missing references on a slow timer,
-    // not every frame.
-    private float _nextSceneSearchTime;
-
     private void Awake()
     {
         // 1. Build a clean, lightweight UI Canvas that doesn't rely on outside prefabs
@@ -65,12 +53,8 @@ public class SyringeDebugHUD : MonoBehaviour
 
     private void LateUpdate()
     {
-        if ((detector == null || angleEstimator == null) && Time.unscaledTime >= _nextSceneSearchTime)
-        {
-            _nextSceneSearchTime = Time.unscaledTime + 1f;
-            if (detector == null) detector = FindAnyObjectByType<CustomSyringeDetector>();
-            if (angleEstimator == null) angleEstimator = FindAnyObjectByType<SyringeAngleEstimator>();
-        }
+        if (detector == null) detector = FindAnyObjectByType<CustomSyringeDetector>();
+        if (angleEstimator == null) angleEstimator = FindAnyObjectByType<SyringeAngleEstimator>();
 
         // Anchor the debug panel directly in front of your head/camera view space
         var cam = Camera.main;
@@ -80,13 +64,10 @@ public class SyringeDebugHUD : MonoBehaviour
         transform.position = ct.position + ct.forward * 1.2f + ct.up * -0.2f; // 1.2 meters away, slightly lowered
         transform.rotation = Quaternion.LookRotation((transform.position - ct.position).normalized, ct.up);
 
-        // 5. Update data display strings (throttled - see TextRefreshInterval)
+        // 5. Update data display strings
         if (_hudText == null) return;
-        if (Time.unscaledTime < _nextTextRefreshTime) return;
-        _nextTextRefreshTime = Time.unscaledTime + TextRefreshInterval;
 
-        System.Text.StringBuilder sb = _sb;
-        sb.Clear();
+        System.Text.StringBuilder sb = new System.Text.StringBuilder();
         sb.AppendLine("<b>== SYRINGE PIPELINE DEBUGGER ==</b>\n");
 
         if (detector == null)

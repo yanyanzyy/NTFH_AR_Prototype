@@ -27,11 +27,6 @@ public class SyringeVisualizer : MonoBehaviour
     private LineRenderer _lineRenderer;
     private Transform _mainCameraTransform;
 
-    // GameObject.Find is a full-hierarchy scan - far too expensive to run every frame on
-    // Quest. Cache the hand-detector transform and only re-scan on a slow retry timer.
-    private Transform _handTrackingTarget;
-    private float _nextSceneSearchTime;
-
     void Awake()
     {
         _lineRenderer = GetComponent<LineRenderer>();
@@ -59,15 +54,10 @@ public class SyringeVisualizer : MonoBehaviour
 
     // Update is called once per frame
     void Update()
-    {
-        // 1. Runtime fallback check to repair connection chains dynamically - on a slow
-        //    retry timer, because FindAnyObjectByType every frame costs real frame time.
-        if ((detector == null || angleEstimator == null) && Time.unscaledTime >= _nextSceneSearchTime)
-        {
-            _nextSceneSearchTime = Time.unscaledTime + 1f;
-            if (detector == null) detector = FindAnyObjectByType<CustomSyringeDetector>();
-            if (angleEstimator == null) angleEstimator = FindAnyObjectByType<SyringeAngleEstimator>();
-        }
+    {   
+        // 1. Runtime fallback check to repair connection chains dynamically
+        if (detector == null) detector = FindAnyObjectByType<CustomSyringeDetector>();
+        if (angleEstimator == null) angleEstimator = FindAnyObjectByType<SyringeAngleEstimator>();
         if (detector == null) return;
 
         var cameraSource = detector.cameraSourceComponent;
@@ -135,16 +125,11 @@ public class SyringeVisualizer : MonoBehaviour
 
         if (_mainCameraTransform == null) return estimatedDistance;
 
-        if (_handTrackingTarget == null && Time.unscaledTime >= _nextSceneSearchTime)
-        {
-            _nextSceneSearchTime = Time.unscaledTime + 1f;
-            GameObject found = GameObject.Find("MediaPipeHandDetector");
-            if (found != null) _handTrackingTarget = found.transform;
-        }
+        GameObject handTrackingTarget = GameObject.Find("MediaPipeHandDetector");
 
-        if (_handTrackingTarget != null)
+        if (handTrackingTarget != null)
         {
-            float calculatedDistance = Vector3.Distance(_mainCameraTransform.position, _handTrackingTarget.position);
+            float calculatedDistance = Vector3.Distance(_mainCameraTransform.position, handTrackingTarget.transform.position);
             if (calculatedDistance > 0.15f)
             {
                 return calculatedDistance;
