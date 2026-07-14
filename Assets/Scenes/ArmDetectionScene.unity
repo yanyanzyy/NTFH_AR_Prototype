@@ -2713,7 +2713,7 @@ MonoBehaviour:
   _backend: 256
   _inputSize: 640
   _confidenceThreshold: 0.05
-  _inferenceInterval: 0.05
+  _inferenceInterval: 0.2
   logDebugInfo: 1
   cameraSourceComponent: {fileID: 0}
 --- !u!1 &1511012890
