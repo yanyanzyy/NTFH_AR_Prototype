@@ -1,26 +1,32 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Serialization;
 
 namespace ARArmDetection
 {
     /// <summary>
-    /// Defines the fixed vein layout on the mannequin arm and provides nearest-vein
-    /// queries against a world-space injection point.
+    /// Defines where the veins RUN on the mannequin arm (as line segments / polylines,
+    /// not points — veins are long) and answers nearest-vein queries against a
+    /// world-space injection point. "On vein" means within hitRadiusMeters of the vein
+    /// LINE, i.e. each vein is a capsule around its path.
     ///
-    /// Vein positions are expressed as normalised coordinates:
-    ///   tAlongArm     0 = shoulder end, 1 = wrist end
-    ///   angleDegrees  0 = dorsal/top of arm, 90 = lateral, 180 = ventral, 270 = medial
+    /// Each vein can be defined two ways (checked in this order):
     ///
-    /// These are converted to world space each frame using the arm endpoints from
-    /// ArmDetectionManager. Because the mannequin never moves during a session, the
-    /// world positions remain stable once the arm is locked.
+    ///  A) PREFAB PATH — recommended, no manual on-device marking.
+    ///     Author the vein once in the Unity editor against the 3D arm model: inside the
+    ///     arm overlay prefab, add an empty GameObject named after pathObjectName with a
+    ///     chain of child empties tracing the vein along the mesh surface. At runtime the
+    ///     waypoints are read from the instantiated overlay model (ArmOverlay.ModelRoot),
+    ///     so the veins inherit the overlay's full alignment (position, rotation, scale)
+    ///     automatically — wherever the overlay sits, the veins sit with it, and they
+    ///     stay consistent with what the trainee sees.
     ///
-    /// HOW TO CALIBRATE:
-    ///   1. Run the app, lock the arm overlay.
-    ///   2. Enable Debug Gizmos — coloured spheres appear at each vein zone.
-    ///   3. Adjust tAlongArm and angleDegrees in the Inspector until the spheres
-    ///      sit on top of the correct palpation sites on the physical mannequin.
-    ///   4. Set hitRadiusMeters to the acceptable tolerance (default 2 cm).
+    ///  B) CYLINDER SEGMENT — fallback needing no prefab work.
+    ///     A start and end point in normalised arm coordinates (t: 0 = shoulder end,
+    ///     1 = wrist end; angle: rotation around the arm axis, 0 = dorsal/top) mapped
+    ///     onto the arm cylinder between the locked endpoints. If the end coordinates
+    ///     are left at (0, 0) the vein degrades to a single point at the start (the old
+    ///     sphere behaviour).
     /// </summary>
     public class VeinMap : MonoBehaviour
     {
@@ -30,34 +36,61 @@ namespace ARArmDetection
             [Tooltip("Label shown in the feedback UI (e.g. \"Median Cubital Vein\")")]
             public string name = "Unnamed Vein";
 
+            [Tooltip("OPTION A: name of a GameObject inside the arm overlay prefab whose CHILDREN " +
+                     "(in order) trace this vein along the 3D arm mesh. When set and found, it " +
+                     "overrides the cylinder-segment coordinates below.")]
+            public string pathObjectName = "";
+
+            [Header("Option B: cylinder segment (used when no prefab path)")]
+            [FormerlySerializedAs("tAlongArm")]
             [Range(0f, 1f)]
-            [Tooltip("0 = shoulder end of the arm, 1 = wrist end")]
-            public float tAlongArm = 0.35f;
+            [Tooltip("Segment START along the arm: 0 = shoulder end, 1 = wrist end")]
+            public float tStart = 0.35f;
+
+            [FormerlySerializedAs("angleDegrees")]
+            [Range(0f, 360f)]
+            [Tooltip("Segment START rotation around the arm axis. 0 = top/dorsal, 90 = lateral, 270 = medial")]
+            public float angleStart = 0f;
+
+            [Range(0f, 1f)]
+            [Tooltip("Segment END along the arm. Leave BOTH end values at 0 for a single-point vein.")]
+            public float tEnd = 0f;
 
             [Range(0f, 360f)]
-            [Tooltip("Rotation around the arm long axis. 0 = top/dorsal (palm-up), 90 = lateral (thumb side), 180 = bottom/ventral, 270 = medial (pinky side)")]
-            public float angleDegrees = 0f;
+            [Tooltip("Segment END rotation around the arm axis.")]
+            public float angleEnd = 0f;
 
-            [Tooltip("Acceptable hit radius in metres — how close the injection point must be to count as 'on vein'")]
+            [Tooltip("Acceptable distance (m) from the vein LINE to count as 'on vein' — the vein " +
+                     "is a capsule of this radius around its path.")]
             public float hitRadiusMeters = 0.02f;
 
-            [Tooltip("Colour used for gizmo sphere in Scene view")]
+            [Tooltip("Colour used for the gizmo line in Scene view")]
             public Color debugColor = Color.green;
         }
 
         [SerializeField] private List<VeinZone> _veins = new List<VeinZone>
         {
-            new VeinZone { name = "Median Cubital Vein",  tAlongArm = 0.30f, angleDegrees = 0f,   hitRadiusMeters = 0.025f, debugColor = Color.green  },
-            new VeinZone { name = "Cephalic Vein",        tAlongArm = 0.50f, angleDegrees = 90f,  hitRadiusMeters = 0.020f, debugColor = Color.cyan   },
-            new VeinZone { name = "Basilic Vein",         tAlongArm = 0.50f, angleDegrees = 270f, hitRadiusMeters = 0.020f, debugColor = Color.yellow },
+            new VeinZone { name = "Median Cubital Vein", pathObjectName = "Vein_MedianCubital",
+                           tStart = 0.28f, angleStart = 350f, tEnd = 0.34f, angleEnd = 20f,
+                           hitRadiusMeters = 0.025f, debugColor = Color.green },
+            new VeinZone { name = "Cephalic Vein",       pathObjectName = "Vein_Cephalic",
+                           tStart = 0.30f, angleStart = 90f, tEnd = 0.75f, angleEnd = 90f,
+                           hitRadiusMeters = 0.020f, debugColor = Color.cyan },
+            new VeinZone { name = "Basilic Vein",        pathObjectName = "Vein_Basilic",
+                           tStart = 0.30f, angleStart = 270f, tEnd = 0.75f, angleEnd = 270f,
+                           hitRadiusMeters = 0.020f, debugColor = Color.yellow },
         };
 
         [SerializeField] private ArmDetectionManager _armManager;
 
+        [Tooltip("Arm overlay whose instantiated 3D model hosts the prefab-authored vein paths " +
+                 "(Option A). Optional — without it only cylinder segments are used.")]
+        [SerializeField] private ArmOverlay _overlay;
+
         [Tooltip("Physical radius of the mannequin arm at injection sites (forearm ~4.25 cm)")]
         [SerializeField] private float _armRadiusMeters = 0.0425f;
 
-        [Tooltip("Draw coloured spheres at each vein position in the Scene / Game view")]
+        [Tooltip("Draw the vein paths in the Scene view (editor only)")]
         [SerializeField] private bool _debugGizmos = true;
 
         // ── State ─────────────────────────────────────────────────────────────────────
@@ -67,6 +100,9 @@ namespace ARArmDetection
         public Vector3 Wrist    { get; private set; }
 
         public IReadOnlyList<VeinZone> Veins => _veins;
+
+        private readonly Dictionary<VeinZone, Transform> _pathRootCache = new();
+        private readonly List<Vector3> _workPoints = new();
 
         // ── Unity lifecycle ───────────────────────────────────────────────────────────
 
@@ -87,7 +123,7 @@ namespace ARArmDetection
         // ── Public API ────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Finds the nearest vein to <paramref name="injectionPoint"/> in world space.
+        /// Finds the vein whose PATH passes closest to <paramref name="injectionPoint"/>.
         /// Returns false when the arm isn't locked or no veins are defined.
         /// </summary>
         public bool QueryNearestVein(Vector3 injectionPoint, out QueryResult result)
@@ -95,19 +131,21 @@ namespace ARArmDetection
             result = default;
             if (!HasArm || _veins == null || _veins.Count == 0) return false;
 
-            float     bestDist = float.MaxValue;
-            VeinZone  bestVein = null;
-            Vector3   bestPos  = default;
+            float    bestDist = float.MaxValue;
+            VeinZone bestVein = null;
+            Vector3  bestPos  = default;
 
             foreach (var vein in _veins)
             {
-                Vector3 pos  = GetVeinWorldPosition(vein);
-                float   dist = Vector3.Distance(injectionPoint, pos);
+                if (GetVeinPolyline(vein, _workPoints) == 0) continue;
+
+                Vector3 closest = ClosestPointOnPolyline(injectionPoint, _workPoints);
+                float   dist    = Vector3.Distance(injectionPoint, closest);
                 if (dist < bestDist)
                 {
                     bestDist = dist;
                     bestVein = vein;
-                    bestPos  = pos;
+                    bestPos  = closest;
                 }
             }
 
@@ -125,9 +163,37 @@ namespace ARArmDetection
             return true;
         }
 
-        /// <summary>Converts a vein's normalised coordinates to world space.</summary>
-        public Vector3 GetVeinWorldPosition(VeinZone vein)
-            => NormalisedToWorld(vein.tAlongArm, vein.angleDegrees, _armRadiusMeters, Shoulder, Wrist);
+        /// <summary>
+        /// Writes the vein's current world-space waypoints into <paramref name="points"/>
+        /// (prefab path when available, else the cylinder segment). Returns the count.
+        /// </summary>
+        public int GetVeinPolyline(VeinZone vein, List<Vector3> points)
+        {
+            points.Clear();
+
+            // Option A: waypoints authored inside the arm overlay prefab.
+            if (!string.IsNullOrEmpty(vein.pathObjectName) && TryGetPathRoot(vein, out var root))
+            {
+                if (root.childCount > 0)
+                {
+                    for (int i = 0; i < root.childCount; i++)
+                        points.Add(root.GetChild(i).position);
+                }
+                else
+                {
+                    points.Add(root.position);
+                }
+                return points.Count;
+            }
+
+            // Option B: segment on the arm cylinder between the locked endpoints.
+            if (!HasArm) return 0;
+            points.Add(NormalisedToWorld(vein.tStart, vein.angleStart, _armRadiusMeters, Shoulder, Wrist));
+            bool degeneratePoint = vein.tEnd == 0f && vein.angleEnd == 0f;
+            if (!degeneratePoint)
+                points.Add(NormalisedToWorld(vein.tEnd, vein.angleEnd, _armRadiusMeters, Shoulder, Wrist));
+            return points.Count;
+        }
 
         /// <summary>
         /// Converts normalised arm coordinates to a world-space point on the arm surface.
@@ -150,21 +216,75 @@ namespace ARArmDetection
             return basePos + radial;
         }
 
+        // ── Helpers ───────────────────────────────────────────────────────────────────
+
+        private bool TryGetPathRoot(VeinZone vein, out Transform root)
+        {
+            if (_pathRootCache.TryGetValue(vein, out root) && root != null) return true;
+
+            root = null;
+            Transform modelRoot = _overlay != null ? _overlay.ModelRoot : null;
+            if (modelRoot == null) return false;
+
+            foreach (var t in modelRoot.GetComponentsInChildren<Transform>(true))
+            {
+                if (t.name == vein.pathObjectName)
+                {
+                    root = t;
+                    _pathRootCache[vein] = t;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static Vector3 ClosestPointOnPolyline(Vector3 point, List<Vector3> polyline)
+        {
+            if (polyline.Count == 1) return polyline[0];
+
+            Vector3 best = polyline[0];
+            float bestSqr = float.MaxValue;
+            for (int i = 0; i < polyline.Count - 1; i++)
+            {
+                Vector3 candidate = ClosestPointOnSegment(point, polyline[i], polyline[i + 1]);
+                float sqr = (candidate - point).sqrMagnitude;
+                if (sqr < bestSqr)
+                {
+                    bestSqr = sqr;
+                    best = candidate;
+                }
+            }
+            return best;
+        }
+
+        private static Vector3 ClosestPointOnSegment(Vector3 point, Vector3 a, Vector3 b)
+        {
+            Vector3 ab = b - a;
+            float lengthSqr = ab.sqrMagnitude;
+            if (lengthSqr < 1e-8f) return a;
+            float t = Mathf.Clamp01(Vector3.Dot(point - a, ab) / lengthSqr);
+            return a + ab * t;
+        }
+
         // ── Gizmos ────────────────────────────────────────────────────────────────────
 
         private void OnDrawGizmos()
         {
             if (!_debugGizmos || !HasArm || _veins == null) return;
 
+            var points = new List<Vector3>();
             foreach (var vein in _veins)
             {
-                Vector3 pos = GetVeinWorldPosition(vein);
+                if (GetVeinPolyline(vein, points) == 0) continue;
+
                 Gizmos.color = vein.debugColor;
-                Gizmos.DrawSphere(pos, vein.hitRadiusMeters);
-                Gizmos.DrawLine(pos, pos + Vector3.up * 0.04f);
+                for (int i = 0; i < points.Count - 1; i++)
+                    Gizmos.DrawLine(points[i], points[i + 1]);
+                foreach (var p in points)
+                    Gizmos.DrawWireSphere(p, vein.hitRadiusMeters);
 
 #if UNITY_EDITOR
-                UnityEditor.Handles.Label(pos + Vector3.up * 0.05f, vein.name);
+                UnityEditor.Handles.Label(points[0] + Vector3.up * 0.05f, vein.name);
 #endif
             }
         }
@@ -174,9 +294,10 @@ namespace ARArmDetection
         public struct QueryResult
         {
             public VeinZone Vein;
+            /// <summary>Closest point ON the vein path to the injection point (world space).</summary>
             public Vector3  VeinWorldPos;
             public Vector3  InjectionPoint;
-            /// <summary>Vector from injection point to the nearest vein centre (world space).</summary>
+            /// <summary>Vector from injection point to the closest point on the vein (world space).</summary>
             public Vector3  Delta;
             public float    DistanceMeters;
             public bool     IsOnVein;

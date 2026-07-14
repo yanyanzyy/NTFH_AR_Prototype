@@ -38,4 +38,14 @@ namespace ARArmDetection
         public Vector2 WristImage;
         public float Confidence;
     }
+
+    public struct NeedleDetection
+    {
+        public Rect ImageBounds;
+        public float Confidence;
+        public Vector2 TipImage;      // kpt0 = NeedleTip (contact point)
+        public Vector2 HubImage;      // last kpt = hub/Plunger
+        public float TipConfidence;   // per-keypoint visibility score (tip runs ~0.98)
+        public float HubConfidence;   // plunger runs ~0.03-0.05 even on clean detections
+    }
 }

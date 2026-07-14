@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using Unity.InferenceEngine;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace ARArmDetection
 {
@@ -21,6 +22,10 @@ namespace ARArmDetection
     /// score is read from channel 4 + _armClassId - so an older combined ONNX keeps
     /// working until the arm-only model is assigned.
     ///
+    /// Preprocessing: the input size is read from the ONNX itself (Inspector value is only a
+    /// fallback for dynamic models), and frames are letterboxed - aspect-fitted with gray
+    /// padding - to match Ultralytics train/val preprocessing exactly.
+    ///
     /// Quest 3 frame-rate strategy:
     ///  - inference is layer-sliced via Worker.ScheduleIterable, so each rendered
     ///    frame only dispatches _layersPerFrame layers of GPU work instead of the
@@ -35,6 +40,9 @@ namespace ARArmDetection
         [Header("Model")]
         [SerializeField] private ModelAsset _modelAsset;
         [SerializeField] private BackendType _backend = BackendType.GPUCompute;
+        [Tooltip("Only used when the model has a dynamic input shape. When the ONNX declares a " +
+                 "static input (all Ultralytics exports do), that size is used and this is ignored, " +
+                 "so swapping between 320/640 models can't silently break inference.")]
         [SerializeField] private int _inputSize = 320;
         [Tooltip("Quantize model weights to FP16 at load. Halves weight memory and is faster on the " +
                  "Quest GPU with no practical accuracy loss for this model.")]
@@ -45,6 +53,19 @@ namespace ARArmDetection
                  "inference over several frames so the app holds native frame rate. Lower = smoother " +
                  "frames but fewer detections per second. 0 = dispatch the whole model in one frame.")]
         [SerializeField, Range(0, 64)] private int _layersPerFrame = 14;
+        [Tooltip("Minimum seconds between the END of one inference and the START of the next. " +
+                 "Caps the detector's GPU duty cycle: without a gap the model runs back-to-back " +
+                 "the entire time the app is searching, which overheats the headset (thermal " +
+                 "throttling = progressive lag, then an OS kill). 0.2 s ≈ max 5 detections/s — " +
+                 "plenty for locking onto a stationary mannequin arm.")]
+        [SerializeField] private float _minSecondsBetweenInferences = 0.2f;
+        [Tooltip("Dispose and rebuild the inference Worker this often (seconds) while it is " +
+                 "actively running. The InferenceEngine GPU backend pools scratch memory it does " +
+                 "NOT hand back during a long continuous session, so on an app that never stops " +
+                 "searching this grows until the OS kills it (observed: ~5 GB of GPU memory). " +
+                 "Disposing the worker returns that memory; the model itself is cached so the " +
+                 "rebuild is cheap (no re-load/re-quantize) — just a brief hitch. 0 = never.")]
+        [SerializeField] private float _workerRecycleSeconds = 25f;
 
         [Header("Filtering")]
         [SerializeField, Range(0f, 1f)] private float _confidenceThreshold = 0.25f;
@@ -56,6 +77,7 @@ namespace ARArmDetection
                  "the arm. Ignored by the arm-only [1,11,N] export.")]
         [SerializeField] private int _armClassId = 1;
 
+        private Model _model;   // loaded + quantized once, reused across worker recycles
         private Worker _worker;
         private Tensor<float> _inputTensor;
         private IEnumerator _scheduleSteps;
@@ -65,9 +87,44 @@ namespace ARArmDetection
         private int _pendingImageHeight;
         private readonly List<PoseCandidate> _candidates = new();
         private readonly List<PersonDetection> _detections = new();
+        private readonly List<Rect> _nmsKeptBounds = new();
         private string _lastOutputShape = "-";
+        private float _nextInferenceAllowedTime;
+        private float _nextReadbackWarningTime;
+        private float _workerCreatedTime;
 
-        public bool IsReady => isActiveAndEnabled && _worker != null && _inputTensor != null;
+        // Actual model input size, read from the ONNX itself at load (falls back to _inputSize
+        // only for dynamic-shape models).
+        private int _tensorWidth;
+        private int _tensorHeight;
+
+        // Letterbox state. The model was trained with Ultralytics preprocessing, which fits the
+        // frame into the square input and pads with gray - stretching a 4:3 passthrough frame to
+        // 1:1 is out-of-distribution and measurably hurts detection.
+        private RenderTexture _letterboxSquare;   // model-input-sized, gray-padded
+        private RenderTexture _letterboxContent;  // aspect-fitted camera frame
+        private bool _letterboxUnsupportedWarned;
+
+        // TextureConverter.ToTensor(Texture, Tensor) allocates a NEW CommandBuffer on every
+        // call and never disposes it (InferenceEngine 2.6.1, TextureConverter.cs:27) — the
+        // native command-buffer memory is only reclaimed if a GC finalizer happens to run.
+        // Record into one reusable CommandBuffer instead.
+        private CommandBuffer _toTensorCommandBuffer;
+
+        // Mapping from model input pixels back to source-image pixels, captured when the
+        // pending inference was scheduled (readback lands frames later).
+        private int _pendingPadX;
+        private int _pendingPadY;
+        private float _pendingInvFitX = 1f;
+        private float _pendingInvFitY = 1f;
+
+        // Kill switch: stop running a model that throws on every inference instead of spinning
+        // forever (log spam + GPU leak from aborted inferences). See NeedleDetector.
+        private const int MaxConsecutiveFailures = 8;
+        private int _consecutiveFailures;
+        private bool _permanentlyFailed;
+
+        public bool IsReady => isActiveAndEnabled && !_permanentlyFailed && _worker != null && _inputTensor != null;
         public bool LastRunConsumedNewResult { get; private set; }
         public bool LastRunScheduledInference { get; private set; }
         public float LastArmOnlyMaxScore { get; private set; }
@@ -86,13 +143,35 @@ namespace ARArmDetection
 
         private void OnDisable()
         {
-            _scheduleSteps = null;
-            _readbackPending = false;
-            _pendingOutput = null;
-            _worker?.Dispose();
-            _worker = null;
-            _inputTensor?.Dispose();
-            _inputTensor = null;
+            DisposeWorker();
+            _model = null;
+            _toTensorCommandBuffer?.Dispose();
+            _toTensorCommandBuffer = null;
+            ReleaseLetterboxTextures();
+        }
+
+        /// <summary>Leak-free replacement for TextureConverter.ToTensor(Texture, Tensor):
+        /// records the conversion into a single reusable CommandBuffer.</summary>
+        private void WriteTextureToInputTensor(Texture src)
+        {
+            if (SystemInfo.supportsComputeShaders)
+            {
+                _toTensorCommandBuffer ??= new CommandBuffer { name = "CustomArmDetector.ToTensor" };
+                _toTensorCommandBuffer.Clear();
+                _toTensorCommandBuffer.ToTensor(src, _inputTensor);
+                Graphics.ExecuteCommandBuffer(_toTensorCommandBuffer);
+            }
+            else
+            {
+                // Non-compute path of the static helper doesn't allocate a CommandBuffer.
+                TextureConverter.ToTensor(src, _inputTensor);
+            }
+        }
+
+        private void ReleaseLetterboxTextures()
+        {
+            if (_letterboxSquare != null) { _letterboxSquare.Release(); _letterboxSquare = null; }
+            if (_letterboxContent != null) { _letterboxContent.Release(); _letterboxContent = null; }
         }
 
         public List<PersonDetection> Run(Texture source)
@@ -124,15 +203,29 @@ namespace ARArmDetection
                 {
                     if (AdvanceSchedule())
                     {
-                        Status = $"dispatching layers; using {_detections.Count} cached arm(s)";
+                        // Constant string: this runs every frame while an inference is in
+                        // flight, so avoid re-formatting (and re-allocating) the status text.
+                        Status = "dispatching layers; serving cached arms";
                         return _detections;
                     }
                     BeginReadback();
                     return _detections;
                 }
 
+                // Duty-cycle gate: give the GPU (and the headset's thermals) a breather
+                // between inferences instead of running the model back-to-back forever.
+                if (Time.unscaledTime < _nextInferenceAllowedTime)
+                {
+                    Status = "cooling down; serving cached arms";
+                    return _detections;
+                }
+
+                // Idle here (nothing scheduled or awaiting readback): safe point to recycle
+                // the worker if it's due, reclaiming pooled GPU memory before the next run.
+                RecycleWorkerIfDue();
+
                 // Start a new inference from the freshest camera frame.
-                TextureConverter.ToTensor(source, _inputTensor);
+                WriteLetterboxedInput(source);
                 _pendingImageWidth = source.width;
                 _pendingImageHeight = source.height;
                 LastRunScheduledInference = true;
@@ -159,10 +252,94 @@ namespace ARArmDetection
                 _readbackPending = false;
                 _pendingOutput = null;
                 Status = $"{ex.GetType().Name}: {ex.Message}";
-                Debug.LogError($"[CustomArmDetector] Run failed: {ex}");
+
+                if (++_consecutiveFailures >= MaxConsecutiveFailures)
+                {
+                    _permanentlyFailed = true;
+                    DisposeWorker();
+                    Status = $"DISABLED after {_consecutiveFailures} failures ({ex.GetType().Name}). " +
+                             "Model is incompatible with InferenceEngine; re-export it.";
+                    Debug.LogError($"[CustomArmDetector] Permanently disabled after {_consecutiveFailures} " +
+                                   $"consecutive failures. Last error: {ex}");
+                }
+                else
+                {
+                    Debug.LogError($"[CustomArmDetector] Run failed ({_consecutiveFailures}/{MaxConsecutiveFailures}): {ex}");
+                }
             }
 
             return _detections;
+        }
+
+        /// <summary>
+        /// Fills _inputTensor with an aspect-preserving letterbox of the camera frame: the
+        /// frame is fitted into the model's square input and the remainder padded with the
+        /// same gray Ultralytics uses in training (114/255). Orientation is preserved by
+        /// construction: a plain Blit fits the content and CopyTexture places it as raw
+        /// texels; the padding is centred, so no flip convention can offset it.
+        /// </summary>
+        private void WriteLetterboxedInput(Texture source)
+        {
+            if ((SystemInfo.copyTextureSupport & CopyTextureSupport.Basic) == 0)
+            {
+                // No GPU region-copy support (rare): fall back to the old stretch path.
+                if (!_letterboxUnsupportedWarned)
+                {
+                    _letterboxUnsupportedWarned = true;
+                    Debug.LogWarning("[CustomArmDetector] CopyTexture unsupported on this GPU; " +
+                                     "using stretched (non-letterboxed) model input.");
+                }
+                _pendingPadX = 0;
+                _pendingPadY = 0;
+                _pendingInvFitX = source.width / (float)_tensorWidth;
+                _pendingInvFitY = source.height / (float)_tensorHeight;
+                WriteTextureToInputTensor(source);
+                return;
+            }
+
+            float fit = Mathf.Min(_tensorWidth / (float)source.width,
+                                  _tensorHeight / (float)source.height);
+            int contentW = Mathf.Clamp(Mathf.RoundToInt(source.width * fit), 1, _tensorWidth);
+            int contentH = Mathf.Clamp(Mathf.RoundToInt(source.height * fit), 1, _tensorHeight);
+            int padX = (_tensorWidth - contentW) / 2;
+            int padY = (_tensorHeight - contentH) / 2;
+
+            if (_letterboxSquare == null || !_letterboxSquare.IsCreated() ||
+                _letterboxSquare.width != _tensorWidth || _letterboxSquare.height != _tensorHeight)
+            {
+                if (_letterboxSquare != null) _letterboxSquare.Release();
+                _letterboxSquare = new RenderTexture(_tensorWidth, _tensorHeight, 0, RenderTextureFormat.ARGB32);
+                _letterboxSquare.Create();
+                ClearToUltralyticsGray(_letterboxSquare);
+            }
+            if (_letterboxContent == null || !_letterboxContent.IsCreated() ||
+                _letterboxContent.width != contentW || _letterboxContent.height != contentH)
+            {
+                if (_letterboxContent != null) _letterboxContent.Release();
+                _letterboxContent = new RenderTexture(contentW, contentH, 0, RenderTextureFormat.ARGB32);
+                _letterboxContent.Create();
+                // Content size changed: stale pixels from the previous content rect may
+                // remain in the square outside the new rect, so re-pad it.
+                ClearToUltralyticsGray(_letterboxSquare);
+            }
+
+            Graphics.Blit(source, _letterboxContent);
+            Graphics.CopyTexture(_letterboxContent, 0, 0, 0, 0, contentW, contentH,
+                                 _letterboxSquare, 0, 0, padX, padY);
+            WriteTextureToInputTensor(_letterboxSquare);
+
+            _pendingPadX = padX;
+            _pendingPadY = padY;
+            _pendingInvFitX = source.width / (float)contentW;
+            _pendingInvFitY = source.height / (float)contentH;
+        }
+
+        private static void ClearToUltralyticsGray(RenderTexture rt)
+        {
+            var previous = RenderTexture.active;
+            RenderTexture.active = rt;
+            GL.Clear(false, true, new Color(114f / 255f, 114f / 255f, 114f / 255f, 1f));
+            RenderTexture.active = previous;
         }
 
         /// <summary>Dispatches up to _layersPerFrame layers. Returns true while layers remain.</summary>
@@ -205,7 +382,7 @@ namespace ARArmDetection
 
             if (!_pendingOutput.IsReadbackRequestDone())
             {
-                Status = $"readback pending; using {_detections.Count} cached arm(s)";
+                Status = "readback pending; serving cached arms";
                 return;
             }
 
@@ -223,7 +400,13 @@ namespace ARArmDetection
             }
             catch (Exception ex)
             {
-                Debug.LogWarning($"[CustomArmDetector] Async readback failed ({ex.Message}); retrying synchronously.");
+                // Throttled: if every readback errors this would otherwise spam logcat
+                // several times a second, and logcat I/O itself costs frame time on Quest.
+                if (Time.unscaledTime >= _nextReadbackWarningTime)
+                {
+                    _nextReadbackWarningTime = Time.unscaledTime + 5f;
+                    Debug.LogWarning($"[CustomArmDetector] Async readback failed ({ex.Message}); retrying synchronously.");
+                }
                 try
                 {
                     cpuOutput = _pendingOutput.ReadbackAndClone();
@@ -231,7 +414,6 @@ namespace ARArmDetection
                 catch (Exception ex2)
                 {
                     Status = $"readback dropped ({ex2.GetType().Name}); using {_detections.Count} cached arm(s)";
-                    Debug.LogWarning($"[CustomArmDetector] Readback dropped: {ex2.Message}");
                 }
             }
 
@@ -239,6 +421,7 @@ namespace ARArmDetection
             {
                 using (cpuOutput)
                     ParsePoseOutput(cpuOutput, _pendingImageWidth, _pendingImageHeight);
+                _consecutiveFailures = 0;   // a clean inference clears the failure streak
                 LastRunConsumedNewResult = true;
                 Status = $"arms={_detections.Count} max={LastArmOnlyMaxScore:F3} " +
                          $"conf>={_confidenceThreshold:F2} shape={_lastOutputShape}";
@@ -246,17 +429,13 @@ namespace ARArmDetection
 
             _pendingOutput = null;
             _readbackPending = false;
+            _nextInferenceAllowedTime = Time.unscaledTime + Mathf.Max(0f, _minSecondsBetweenInferences);
         }
 
         private void LoadModel()
         {
-            _scheduleSteps = null;
-            _readbackPending = false;
-            _pendingOutput = null;
-            _worker?.Dispose();
-            _worker = null;
-            _inputTensor?.Dispose();
-            _inputTensor = null;
+            DisposeWorker();
+            _model = null;
 
             if (_modelAsset == null)
             {
@@ -265,11 +444,71 @@ namespace ARArmDetection
             }
 
             var model = ModelLoader.Load(_modelAsset);
+
+            // The ONNX's declared input size is authoritative - a scene serialized for a 640
+            // model silently breaks every inference when a 320 model is assigned (and vice
+            // versa), so never trust the Inspector value when the model states its own.
+            _tensorWidth = _inputSize;
+            _tensorHeight = _inputSize;
+            if (model.inputs.Count > 0 && model.inputs[0].shape.IsStatic())
+            {
+                var declared = model.inputs[0].shape.ToTensorShape();
+                if (declared.rank == 4 && declared[2] > 0 && declared[3] > 0)
+                {
+                    _tensorHeight = declared[2];
+                    _tensorWidth = declared[3];
+                    if (_tensorWidth != _inputSize || _tensorHeight != _inputSize)
+                        Debug.LogWarning($"[CustomArmDetector] _inputSize is {_inputSize} but the model " +
+                                         $"declares {_tensorWidth}x{_tensorHeight}; using the model's size.");
+                }
+            }
+
             if (_quantizeToFp16)
                 ModelQuantizer.QuantizeWeights(QuantizationType.Float16, ref model);
-            _worker = new Worker(model, _backend);
-            _inputTensor = new Tensor<float>(new TensorShape(1, 3, _inputSize, _inputSize));
-            Status = "Model loaded";
+
+            // Cache the loaded+quantized model so RecycleWorkerIfDue can rebuild the worker
+            // without re-loading or re-quantizing (which would be a much bigger hitch).
+            _model = model;
+            CreateWorker();
+            Status = $"Model loaded ({_tensorWidth}x{_tensorHeight})";
+        }
+
+        private void CreateWorker()
+        {
+            _worker = new Worker(_model, _backend);
+            _inputTensor = new Tensor<float>(new TensorShape(1, 3, _tensorHeight, _tensorWidth));
+            _workerCreatedTime = Time.unscaledTime;
+        }
+
+        private void DisposeWorker()
+        {
+            _scheduleSteps = null;
+            _readbackPending = false;
+            _pendingOutput = null;
+            _worker?.Dispose();
+            _worker = null;
+            _inputTensor?.Dispose();
+            _inputTensor = null;
+        }
+
+        /// <summary>
+        /// Periodically disposes and rebuilds the Worker to release GPU scratch memory the
+        /// InferenceEngine backend pools but never returns during a long continuous run.
+        /// Only fires when the pipeline is idle (no inference scheduled or awaiting readback)
+        /// so no in-flight work is lost; the model is cached so the rebuild is cheap.
+        /// </summary>
+        private void RecycleWorkerIfDue()
+        {
+            if (_workerRecycleSeconds <= 0f || _model == null) return;
+            if (_readbackPending || _scheduleSteps != null) return;
+            if (Time.unscaledTime - _workerCreatedTime < _workerRecycleSeconds) return;
+
+            _worker?.Dispose();
+            _worker = null;
+            _inputTensor?.Dispose();
+            _inputTensor = null;
+            CreateWorker();
+            Debug.Log("[CustomArmDetector] Worker recycled to release pooled GPU memory.");
         }
 
         private void ParsePoseOutput(Tensor<float> output, int imageWidth, int imageHeight)
@@ -280,7 +519,10 @@ namespace ARArmDetection
 
             var shape = output.shape;
             _lastOutputShape = shape.ToString();
-            var data = output.DownloadToArray();
+            // The tensor is already a CPU clone (ReadbackAndClone), so read it in place —
+            // DownloadToArray would copy the whole ~370 KB output into a fresh managed array
+            // every inference and feed the GC for nothing.
+            ReadOnlySpan<float> data = output.AsReadOnlySpan();
 
             if (!TryGetYoloLayout(shape, out int rows, out int features, out bool featuresFirst))
             {
@@ -333,7 +575,8 @@ namespace ARArmDetection
 
             _candidates.Sort((a, b) => b.Score.CompareTo(a.Score));
 
-            var keptBounds = new List<Rect>();
+            var keptBounds = _nmsKeptBounds;
+            keptBounds.Clear();
             for (int i = 0; i < _candidates.Count && _detections.Count < _maxDetections; i++)
             {
                 var c = _candidates[i];
@@ -387,7 +630,7 @@ namespace ARArmDetection
             return false;
         }
 
-        private float ReadFeature(float[] data, TensorShape shape, int row, int feature, bool featuresFirst)
+        private float ReadFeature(ReadOnlySpan<float> data, TensorShape shape, int row, int feature, bool featuresFirst)
         {
             if (shape.rank == 3)
             {
@@ -401,29 +644,33 @@ namespace ARArmDetection
             return featuresFirst ? data[feature * rows2 + row] : data[row * features2 + feature];
         }
 
-        private Vector2 ReadKeypoint(float[] data, TensorShape shape, int row, int kptOffset, int k,
+        private Vector2 ReadKeypoint(ReadOnlySpan<float> data, TensorShape shape, int row, int kptOffset, int k,
                                      bool featuresFirst, int imageWidth, int imageHeight)
         {
             float kx = ReadFeature(data, shape, row, kptOffset + k * 3, featuresFirst);
             float ky = ReadFeature(data, shape, row, kptOffset + 1 + k * 3, featuresFirst);
             bool normalized = Mathf.Max(Mathf.Abs(kx), Mathf.Abs(ky)) <= 2f;
-            float scaleX = normalized ? imageWidth : imageWidth / (float)_inputSize;
-            float scaleY = normalized ? imageHeight : imageHeight / (float)_inputSize;
+            if (normalized) { kx *= _tensorWidth; ky *= _tensorHeight; }
             return new Vector2(
-                Mathf.Clamp(kx * scaleX, 0f, imageWidth),
-                Mathf.Clamp(ky * scaleY, 0f, imageHeight));
+                Mathf.Clamp((kx - _pendingPadX) * _pendingInvFitX, 0f, imageWidth),
+                Mathf.Clamp((ky - _pendingPadY) * _pendingInvFitY, 0f, imageHeight));
         }
 
         private Rect XywhToImageBounds(float cx, float cy, float w, float h, int imageWidth, int imageHeight)
         {
             bool normalized = Mathf.Max(Mathf.Abs(cx), Mathf.Abs(cy), Mathf.Abs(w), Mathf.Abs(h)) <= 2f;
-            float scaleX = normalized ? imageWidth : imageWidth / (float)_inputSize;
-            float scaleY = normalized ? imageHeight : imageHeight / (float)_inputSize;
+            if (normalized)
+            {
+                cx *= _tensorWidth; w *= _tensorWidth;
+                cy *= _tensorHeight; h *= _tensorHeight;
+            }
 
-            float width = Mathf.Abs(w) * scaleX;
-            float height = Mathf.Abs(h) * scaleY;
-            float centerX = cx * scaleX;
-            float centerY = cy * scaleY;
+            // Model coords live in the letterboxed input: remove the padding offset, then
+            // scale back to source pixels (sizes only scale - padding never offsets them).
+            float width = Mathf.Abs(w) * _pendingInvFitX;
+            float height = Mathf.Abs(h) * _pendingInvFitY;
+            float centerX = (cx - _pendingPadX) * _pendingInvFitX;
+            float centerY = (cy - _pendingPadY) * _pendingInvFitY;
 
             float xMin = Mathf.Clamp(centerX - width * 0.5f, 0f, imageWidth);
             float yMin = Mathf.Clamp(centerY - height * 0.5f, 0f, imageHeight);

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Reflection;
 using Meta.XR;
 using UnityEngine;
 
@@ -20,9 +21,37 @@ namespace ARArmDetection
         [Tooltip("If the custom detector finds no arm, use MediaPipe hand landmarks as a fallback.")]
         [SerializeField] private bool _fallbackToMediaPipe = true;
 
+        [Header("Needle detection (vision)")]
+        [Tooltip("Runs the trained needle model (arm-needle-pose-320.onnx) alongside the arm model. " +
+                 "Optional: when unassigned, InjectionSiteDetector falls back to hand tracking.")]
+        [SerializeField] private NeedleDetector _needleDetector;
+        [Tooltip("Only run the needle model once an arm is locked. The needle tip is only consumed " +
+                 "during injection (which requires a locked arm), so this keeps the whole GPU budget " +
+                 "on arm acquisition until then.")]
+        [SerializeField] private bool _runNeedleOnlyWhileLocked = true;
+        [Tooltip("How strongly to smooth the needle tip/hub world positions (0 = raw, 1 = frozen).")]
+        [SerializeField, Range(0f, 1f)] private float _needleWorldSmoothing = 0.5f;
+        [Tooltip("Seconds without a fresh needle detection before TryGetNeedleTip reports lost. " +
+                 "Bridges the gap between completed inferences (the model only finishes every few frames).")]
+        [SerializeField] private float _needleLostAfterSeconds = 0.75f;
+        [Header("MediaPipe pipeline lifecycle")]
+        [Tooltip("Manage the heavyweight MediaPipe HandLandmarkerRunner automatically. The runner " +
+                 "opens its own camera stream, does a full-frame GPU readback every frame and runs " +
+                 "CPU inference, so it is kept OFF while its results would not be consumed (custom " +
+                 "detector active and fallback unused) and started/paused on demand.")]
+        [SerializeField] private bool _manageMediaPipeLifecycle = true;
+        [Tooltip("Seconds the custom detector must be starved (usable but zero detections) before " +
+                 "the MediaPipe fallback pipeline is started or resumed.")]
+        [SerializeField] private float _mediaPipeActivateAfterSeconds = 2f;
+        [Tooltip("Seconds of sustained custom detections before the MediaPipe pipeline is paused again.")]
+        [SerializeField] private float _mediaPipePauseAfterSeconds = 2f;
+
         [Header("Depth estimation")]
         [SerializeField] private EnvironmentRaycastManager _depthRaycaster;
-        [SerializeField] private float _assumedPersonHeightMeters = 1.7f;
+        [Tooltip("Real-world length (m) of the detected arm segment. Used to estimate depth from " +
+                 "the detected box's long side (the arm-only model's box IS the arm). The Limbs & " +
+                 "Things forearm incl. hand is ~0.5 m.")]
+        [SerializeField] private float _assumedArmLengthMeters = 0.5f;
         [SerializeField] private float _minPersonBboxPixels = 10f;
         [SerializeField] private float _minDepthMeters = 0.3f;
         [SerializeField] private float _maxDepthMeters = 8f;
@@ -33,8 +62,63 @@ namespace ARArmDetection
         [SerializeField] private float _armOnlyStabilityRadiusPixels = 420f;
         [SerializeField, Range(0f, 1f)] private float _armOnlyImageSmoothing = 0.65f;
         [SerializeField, Range(0f, 1f)] private float _armOnlyWorldSmoothing = 0.55f;
-        [SerializeField, Range(0, 90)] private int _armOnlyLockLostFrames = 30;
         [SerializeField, Range(1, 12)] private int _customDetectorEveryNFrames = 1;
+
+        [Header("Target lock")]
+        [Tooltip("Consecutive NEW inference results a candidate must stay in roughly the same world " +
+                 "position before the overlay locks on. Prevents snapping onto single-frame false " +
+                 "positives. Cached detections served between inferences do not count.")]
+        [SerializeField, Range(1, 30)] private int _acquireConsistentFrames = 4;
+        [Tooltip("World radius (m) a candidate may drift from the running average position and still " +
+                 "count toward acquisition.")]
+        [SerializeField] private float _acquireRadiusMeters = 0.3f;
+        [Tooltip("Minimum detector confidence a candidate needs to START acquiring a lock. Updating " +
+                 "an already-locked arm only needs the detector's own threshold; this higher bar " +
+                 "keeps marginal detections from initiating a lock.")]
+        [SerializeField, Range(0f, 1f)] private float _acquireMinConfidence = 0.4f;
+        [Tooltip("During acquisition, how long detection may drop out (seconds) before progress " +
+                 "resets. The detector only delivers results every few frames, so a hard per-frame " +
+                 "reset would make locking nearly impossible with an intermittent detector.")]
+        [SerializeField] private float _acquireGapToleranceSeconds = 0.6f;
+        [Tooltip("While locked, only detections whose midpoint lies within this distance (m) of the locked " +
+                 "arm can update it. Anything outside is ignored, so the overlay never jumps to another arm.")]
+        [SerializeField] private float _lockGateRadiusMeters = 0.35f;
+        [Tooltip("The gate radius grows at this rate (m/s) while the locked arm is undetected, so a " +
+                 "mannequin arm that was moved during a detection dropout can be re-captured.")]
+        [SerializeField] private float _lockGateGrowPerSecondLost = 0.25f;
+        [Tooltip("Upper bound (m) for the grown gate radius.")]
+        [SerializeField] private float _lockGateMaxRadiusMeters = 0.9f;
+        [Tooltip("Automatically release the lock after the arm has been undetected this long (seconds). " +
+                 "0 = never auto-unlock; the pose is held in world space until Unlock() is called " +
+                 "(UNLOCK ARM button / controller B). Ignored while the lock is frozen.")]
+        [SerializeField] private float _autoUnlockAfterLostSeconds = 0f;
+        [Tooltip("Freeze the overlay in world space once the lock is acquired (after the refinement " +
+                 "window below). The physical arm is stationary, so detections arriving while the " +
+                 "user moves and looks around only wobble the overlay or drag it onto other objects. " +
+                 "Frozen means: ignore ALL detections and hold the world-anchored pose until " +
+                 "UNLOCK ARM / controller B releases it.")]
+        [SerializeField] private bool _freezeWhileLocked = true;
+        [Tooltip("MINIMUM refinement time after acquiring the lock (seconds) before the pose can " +
+                 "freeze. Lets the smoothed world pose settle onto the arm first. " +
+                 "0 = freeze on the very first locked pose.")]
+        [SerializeField] private float _lockRefineSeconds = 1.5f;
+        [Tooltip("Also require the HEADSET to move sideways during refinement before freezing. " +
+                 "Depth and centre derived from a 2D box are viewpoint-biased, so a pose frozen " +
+                 "from one angle lands differently than from another; averaging detections while " +
+                 "the head moves cancels most of that bias. The user just steps a little around " +
+                 "the arm after locking (the lock status shows progress).")]
+        [SerializeField] private bool _requireViewpointDiversity = true;
+        [Tooltip("How far (m) the head must move from its lock-time position before freezing. " +
+                 "~0.35 m is half a step sideways.")]
+        [SerializeField] private float _refineHeadBaselineMeters = 0.35f;
+        [Tooltip("Safety valve: freeze anyway after this many refinement seconds even if the head " +
+                 "never moved. 0 = wait for the baseline indefinitely.")]
+        [SerializeField] private float _maxRefineSeconds = 12f;
+        [Tooltip("Completely stop running the arm model while the lock is frozen. A frozen lock " +
+                 "ignores every detection anyway, so inference is pure waste — running it forever " +
+                 "heats the headset until it throttles (progressive lag) and can crash the app. " +
+                 "The model resumes automatically the moment the lock is released.")]
+        [SerializeField] private bool _suspendDetectionWhileFrozen = true;
 
         [Header("Depth-based arm axis (bypasses keypoint regression)")]
         [Tooltip("When a depth raycaster is available, estimate the arm's 3D axis by sampling a grid " +
@@ -48,6 +132,11 @@ namespace ARArmDetection
         [Tooltip("Flip which depth-derived axis endpoint is treated as shoulder vs wrist. Toggle once " +
                  "after visually checking overlay orientation against your fixed mannequin setup.")]
         [SerializeField] private bool _swapDepthAxisEndpoints = false;
+        [Tooltip("Snap the depth-derived endpoints to the known mannequin arm length " +
+                 "(_fixedArmLengthMeters), keeping the sensed midpoint and direction. The raw " +
+                 "raycast extremes land wherever the sample grid happened to hit, so the raw span " +
+                 "jitters and under/over-shoots the real arm; the physical length is constant.")]
+        [SerializeField] private bool _normalizeDepthAxisLength = true;
 
         [Header("Fixed-axis fallback (no depth sensing or trained keypoints needed)")]
         [Tooltip("When depth-axis estimation can't get hits (e.g. raycasting against a handheld prop " +
@@ -67,6 +156,20 @@ namespace ARArmDetection
         [SerializeField, Range(0f, 1f)] private float _fixedAxisDepthSmoothing = 0.97f;
         [Tooltip("Flip which fixed-axis endpoint is treated as shoulder vs wrist.")]
         [SerializeField] private bool _swapFixedAxisEndpoints = false;
+        [Tooltip("Manual depth trim (metres) added to the arm's depth along the camera view ray. " +
+                 "If the LOCKED overlay slides against the real arm when you move your head, it is " +
+                 "sitting in front of / behind the arm (parallax) - nudge this in Play mode until it " +
+                 "seats on the arm and stops sliding. +ve pushes it away from you, -ve pulls it closer. " +
+                 "Because the pose is world-locked once frozen, dialling this in once fixes the drift.")]
+        [SerializeField, Range(-0.5f, 0.5f)] private float _fixedAxisDepthOffsetMeters = 0f;
+
+        [Header("Memory hygiene")]
+        [Tooltip("Force a full GC sweep this often (seconds). This app allocates very little " +
+                 "managed garbage, so the GC can otherwise go minutes without running while " +
+                 "native memory held by finalizable wrappers (e.g. the CommandBuffers " +
+                 "InferenceEngine's ToTensor leaks internally) piles up unreclaimed. A sweep " +
+                 "on this small heap costs a few ms. 0 = disabled.")]
+        [SerializeField] private float _gcSweepIntervalSeconds = 30f;
 
         [Header("Debug")]
         [SerializeField] private ArmDetectionDebugHUD _debugHUD;
@@ -90,8 +193,29 @@ namespace ARArmDetection
             Debug.Log("[ArmManager] Arm detection mode is fixed to ARM-ONLY.");
         }
 
-        /// <summary>True while the tracker has a valid smoothed arm in world space.</summary>
-        public bool IsLocked => _hasSmoothedArmWorld && _stableArmLostFrames < _armOnlyLockLostFrames;
+        /// <summary>True while the tracker is locked onto a target arm (endpoints valid).
+        /// The lock is held through detection dropouts — the pose stays anchored in world
+        /// space — until Unlock() is called or the optional auto-unlock timer expires.</summary>
+        public bool IsLocked => _lockState == LockState.Locked && _hasSmoothedArmWorld;
+
+        /// <summary>Human-readable lock state for the HUD and the unlock button.</summary>
+        public string LockStatus { get; private set; } = "Searching";
+
+        /// <summary>
+        /// Releases the current target lock so a new arm can be acquired. Wired to the
+        /// UNLOCK ARM button, the hand pinch-hold gesture, and controller B (see
+        /// ArmLockButton) for when the overlay grabbed the wrong target.
+        /// </summary>
+        public void Unlock()
+        {
+            _lockState = LockState.Searching;
+            _acquireFrameCount = 0;
+            _acquireGapSeconds = 0f;
+            _lockLostSeconds = 0f;
+            ResetArmStability();
+            LockStatus = "Searching (unlocked)";
+            Debug.Log("[ArmManager] Target lock released — searching for a new arm.");
+        }
 
         /// <summary>
         /// Returns the current smoothed shoulder and wrist world positions.
@@ -108,18 +232,51 @@ namespace ARArmDetection
         /// or failed this frame. Surfaced in the debug HUD to diagnose depth-API issues.</summary>
         public string DepthAxisStatus { get; private set; } = "Not attempted yet";
 
+        /// <summary>Human-readable needle detection state for the HUD.</summary>
+        public string NeedleStatus { get; private set; } = "No needle detector";
+
+        /// <summary>
+        /// Smoothed world position of the vision-detected needle tip. Returns false when the
+        /// needle detector is missing/idle or the needle hasn't been seen recently.
+        /// </summary>
+        public bool TryGetNeedleTip(out Vector3 tip)
+        {
+            tip = _smoothedNeedleTipWorld;
+            return _hasNeedleWorld;
+        }
+
+        /// <summary>Smoothed world positions of the needle tip and hub (the needle axis).</summary>
+        public bool TryGetNeedle(out Vector3 tip, out Vector3 hub)
+        {
+            tip = _smoothedNeedleTipWorld;
+            hub = _smoothedNeedleHubWorld;
+            return _hasNeedleWorld;
+        }
+
         private struct ArmCandidate
         {
             public Vector3 Shoulder;
             public Vector3 Wrist;
             public float Depth;
             public float Score;
+            public float Confidence;   // raw detector confidence, before score shaping
             public Vector2 ShoulderImage;
             public Vector2 ElbowImage;
             public Vector2 WristImage;
             public Side Side;
         }
 
+        private enum LockState { Searching, Acquiring, Locked }
+
+        private LockState _lockState = LockState.Searching;
+        private int _acquireFrameCount;
+        private Vector3 _acquireMidWorld;
+        private float _acquireGapSeconds;
+        private bool _freshResultThisFrame;
+        private float _lockAcquiredTime;
+        private Vector3 _lockHeadStartPos;
+        private float _refineHeadBaseline;
+        private float _lockLostSeconds;
         private bool _hasStableArmImage;
         private Side _stableArmSide;
         private Vector2 _stableArmMidpointImage;
@@ -127,13 +284,40 @@ namespace ARArmDetection
         private Vector3 _smoothedShoulderWorld;
         private Vector3 _smoothedWristWorld;
         private PersonDetection _stableArmDetection;
-        private int _stableArmLostFrames;
         private bool _currentDetectionsAreMediaPipe;
         private int _customDetectorFrameCounter;
         private readonly List<PersonDetection> _cachedCustomDetections = new();
 
         private bool _hasStableFixedAxisDepth;
         private float _stableFixedAxisDepth;
+
+        private bool _hasNeedleWorld;
+        private Vector3 _smoothedNeedleTipWorld;
+        private Vector3 _smoothedNeedleHubWorld;
+        private float _needleLastSeenTime;
+        // Scratch buffers + per-frame result cache for TryEstimateArmAxisFromDepth, so the
+        // grid raycasts are never repeated for the same box within a frame and the hot path
+        // allocates nothing.
+        private readonly List<Vector3> _axisHits = new();
+        private readonly List<float> _axisDepths = new();
+        private readonly List<Vector3> _axisFilteredPoints = new();
+        // Median-depth sampler for the fixed-axis anchor (see TrySenseCenterDepth).
+        private readonly List<float> _centerDepthSamples = new();
+        private int _axisCacheFrame = -1;
+        private Rect _axisCacheBounds;
+        private bool _axisCacheResult;
+        private Vector3 _axisCacheEndA;
+        private Vector3 _axisCacheEndB;
+
+        // MediaPipe runner lifecycle (found by type name so there is no compile-time
+        // dependency on the MediaPipe sample assembly, mirroring MediaPipeHomulerBridge).
+        private Behaviour _mediaPipeRunner;
+        private MethodInfo _mediaPipeRunnerPause;
+        private MethodInfo _mediaPipeRunnerResume;
+        private bool _mediaPipeRunnerStarted;
+        private bool _mediaPipeRunnerPaused;
+        private float _mediaPipeStarvedSeconds;
+        private float _mediaPipeFedSeconds;
 
         private void Reset()
         {
@@ -142,6 +326,27 @@ namespace ARArmDetection
             _mediaPipeDetector = GetComponentInChildren<MediaPipeHandArmDetector>();
             _wearerFilter = GetComponentInChildren<WearerHandFilter>();
             _overlay = GetComponentInChildren<ArmOverlay>();
+        }
+
+        private void Awake()
+        {
+            if (!_manageMediaPipeLifecycle) return;
+
+            // Locate the homuler HandLandmarkerRunner and disable it BEFORE its Start() runs
+            // (every Awake executes before any Start), so the MediaPipe pipeline — its own
+            // camera stream, per-frame readbacks and CPU inference — does not auto-play.
+            // Unity defers Start() until a component is first enabled, so enabling the runner
+            // later boots the pipeline through exactly the same code path as at scene load.
+            foreach (var mb in FindObjectsByType<MonoBehaviour>(FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                if (mb == null || mb.GetType().Name != "HandLandmarkerRunner") continue;
+                _mediaPipeRunner = mb;
+                _mediaPipeRunnerPause = mb.GetType().GetMethod("Pause");
+                _mediaPipeRunnerResume = mb.GetType().GetMethod("Resume");
+                mb.enabled = false;
+                Debug.Log("[ArmManager] MediaPipe HandLandmarkerRunner found - deferred until its results are needed.");
+                break;
+            }
         }
 
         private void Start()
@@ -153,9 +358,19 @@ namespace ARArmDetection
             if (_overlay == null) Debug.LogError("[ArmManager] _overlay is NULL.");
         }
 
+        private float _nextGcSweepTime;
+
         private void Update()
         {
-            if (Time.frameCount % 120 == 0)
+            if (_gcSweepIntervalSeconds > 0f && Time.unscaledTime >= _nextGcSweepTime)
+            {
+                _nextGcSweepTime = Time.unscaledTime + _gcSweepIntervalSeconds;
+                System.GC.Collect();
+            }
+
+            // ~every 8 s at 72 fps: logcat writes cost frame time on Quest, so keep the
+            // heartbeat log sparse.
+            if (Time.frameCount % 600 == 0)
             {
                 Debug.Log($"[ArmManager] cam={_cameraSource != null} custom={_customArmDetector != null} " +
                           $"mp={_mediaPipeDetector != null} " +
@@ -167,6 +382,36 @@ namespace ARArmDetection
             if (_customArmDetector == null && _mediaPipeDetector == null) { ManagerStatus = "ERR: No detector assigned"; return; }
             if (_overlay == null) { ManagerStatus = "ERR: Overlay not assigned"; return; }
             if (!_cameraSource.HasFrame) { ManagerStatus = "Waiting: no camera frame"; return; }
+
+            UpdateMediaPipeLifecycle();
+
+            // Frozen lock: the world-anchored pose is held and every detection would be
+            // ignored anyway, so skip inference entirely (the model resumes on Unlock()).
+            // Without this the arm model runs at full tilt forever after locking, which
+            // heats the headset into throttling and eventually crashes the app.
+            if (_suspendDetectionWhileFrozen && IsLockFrozen() && _hasStableArmImage && _hasSmoothedArmWorld)
+            {
+                bool heldFound = false;
+                ArmCandidate held = default;
+                int heldIdx = -1;
+                Side heldSide = _stableArmSide;
+                UseHeldLockPose(ref heldFound, ref held, ref heldIdx, ref heldSide);
+
+                LockStatus = "Locked (frozen in place)";
+                ManagerStatus = "Locked - arm model suspended";
+                LastArmStatus = "Held (frozen lock)";
+                LastPersonCount = LastDetections.Count;
+                SelectedDetectionIndex = heldFound ? heldIdx : -1;
+                SelectedDetectionSide = heldSide;
+                LastFoundArm = heldFound;
+
+                _overlay.Render(heldFound ? (held.Shoulder, held.Wrist) : ((Vector3, Vector3)?)null,
+                                _cameraSource.CameraTransform);
+                UpdateNeedleDetection();
+                _debugHUD?.ReportDetections(LastPersonCount, heldFound ? 1 : 0);
+                return;
+            }
+
             if (!HasReadyDetector()) { ManagerStatus = "Waiting: detector not ready"; return; }
 
             _currentDetectionsAreMediaPipe = false;
@@ -183,7 +428,16 @@ namespace ARArmDetection
             int bboxPassCount = 0;
             int keypointPassCount = 0;
             int filterPassCount = 0;
+            int gateRejectCount = 0;
             int depthRaycastHits = 0;
+
+            // The custom detector fills the Left and Right keypoint slots with IDENTICAL data
+            // (see CustomArmDetector.ToPersonDetection), so evaluating the Right side can only
+            // change the outcome when the continuity bonus keys on a previously selected Right
+            // side. Skipping the duplicate halves the per-candidate work (and, when depth-axis
+            // estimation is enabled, its raycasts) without changing the selected result.
+            bool sidesIdentical = !_currentDetectionsAreMediaPipe;
+            bool evaluateRight = !sidesIdentical || (_hasStableArmImage && _stableArmSide == Side.Right);
 
             for (int i = 0; i < persons.Count; i++)
             {
@@ -193,25 +447,88 @@ namespace ARArmDetection
                 bboxPassCount++;
 
                 float depth = EstimateDepth(p);
-                if (TryArm(p, Side.Left, depth, ref found, ref best, ref keypointPassCount, ref filterPassCount, ref depthRaycastHits))
+                if (TryArm(p, Side.Left, depth, ref found, ref best, ref keypointPassCount, ref filterPassCount, ref gateRejectCount, ref depthRaycastHits))
                 {
                     selectedIdx = i;
                     selectedSide = Side.Left;
                 }
-                if (TryArm(p, Side.Right, depth, ref found, ref best, ref keypointPassCount, ref filterPassCount, ref depthRaycastHits))
+                if (evaluateRight &&
+                    TryArm(p, Side.Right, depth, ref found, ref best, ref keypointPassCount, ref filterPassCount, ref gateRejectCount, ref depthRaycastHits))
                 {
                     selectedIdx = i;
                     selectedSide = Side.Right;
                 }
             }
 
-            if (found)
+            bool renderOverlay = false;
+            if (_lockState == LockState.Locked)
             {
-                StabilizeArmOnlyCandidate(ref best, selectedSide, selectedIdx);
+                float refineElapsed = Time.time - _lockAcquiredTime;
+
+                // Track how far the head has moved since the lock was acquired. The baseline is
+                // monotonic (max displacement), so freezing is stable once the bar is met.
+                float headDist = Vector3.Distance(_cameraSource.CameraPose.position, _lockHeadStartPos);
+                if (headDist > _refineHeadBaseline) _refineHeadBaseline = headDist;
+
+                bool baselineMet = !_requireViewpointDiversity
+                                   || _refineHeadBaseline >= _refineHeadBaselineMeters
+                                   || (_maxRefineSeconds > 0f && refineElapsed >= _maxRefineSeconds);
+                bool frozen = _freezeWhileLocked && refineElapsed >= _lockRefineSeconds && baselineMet;
+
+                if (frozen)
+                {
+                    // Hard lock: the pose stays world-anchored where refinement left it and ALL
+                    // detections are ignored. The physical arm hasn't moved - any pose change
+                    // from here on would come from detection shift as the user moves and looks
+                    // around, which is exactly the wobble/drift the freeze exists to prevent.
+                    UseHeldLockPose(ref found, ref best, ref selectedIdx, ref selectedSide);
+                    LockStatus = "Locked (frozen in place)";
+                    renderOverlay = found;
+                }
+                else if (found)
+                {
+                    _lockLostSeconds = 0f;
+                    StabilizeArmOnlyCandidate(ref best, selectedSide, selectedIdx);
+                    if (!_freezeWhileLocked)
+                        LockStatus = "Locked (tracking)";
+                    else if (_requireViewpointDiversity && _refineHeadBaseline < _refineHeadBaselineMeters)
+                        LockStatus = $"Locked (refining — step around the arm: " +
+                                     $"{_refineHeadBaseline:F2}/{_refineHeadBaselineMeters:F2} m)";
+                    else
+                        LockStatus = $"Locked (refining {refineElapsed:F1}/{_lockRefineSeconds:F1}s)";
+                    renderOverlay = true;
+                }
+                else
+                {
+                    _lockLostSeconds += Time.deltaTime;
+                    if (_autoUnlockAfterLostSeconds > 0f && _lockLostSeconds >= _autoUnlockAfterLostSeconds)
+                    {
+                        Unlock();
+                    }
+                    else
+                    {
+                        // Hold the last pose: it is anchored in world space, so it stays on
+                        // the (stationary) arm through dropouts and while the user walks around.
+                        UseHeldLockPose(ref found, ref best, ref selectedIdx, ref selectedSide);
+                        LockStatus = $"Locked (holding {_lockLostSeconds:F1}s, gate {CurrentLockGateRadius():F2} m)";
+                        renderOverlay = found;
+                    }
+                }
+            }
+            else if (found)
+            {
+                UpdateAcquisition(best);
+                if (_lockState == LockState.Locked)
+                {
+                    StabilizeArmOnlyCandidate(ref best, selectedSide, selectedIdx);
+                    LockStatus = "Locked (tracking)";
+                    renderOverlay = true;
+                }
+                // else: UpdateAcquisition set LockStatus.
             }
             else
             {
-                TryUseLockedArmOnlyCandidate(ref found, ref best, ref selectedIdx, ref selectedSide);
+                TickAcquisitionGap();
             }
 
             SelectedDetectionIndex = found ? selectedIdx : -1;
@@ -241,19 +558,147 @@ namespace ARArmDetection
             {
                 LastArmStatus = "All arms blocked by WearerFilter";
             }
+            else if (gateRejectCount > 0)
+            {
+                LastArmStatus = $"{gateRejectCount} detection(s) outside lock gate (ignored)";
+            }
             else
             {
                 LastArmStatus = "No arm selected";
             }
 
             var camTransform = _cameraSource.CameraTransform;
-            _overlay.Render(found ? (best.Shoulder, best.Wrist) : null, camTransform);
+            _overlay.Render(renderOverlay ? (best.Shoulder, best.Wrist) : ((Vector3, Vector3)?)null, camTransform);
 
             LastFoundArm = found;
+            UpdateNeedleDetection();
             _debugHUD?.ReportDetections(persons.Count, found ? 1 : 0);
         }
 
+        /// <summary>
+        /// Runs the needle model on the same camera frame and maintains a smoothed world-space
+        /// needle tip/hub for InjectionSiteDetector. The needle is a separate, second worker —
+        /// the arm model stays untouched — so it only runs while an arm is locked by default.
+        /// </summary>
+        private void UpdateNeedleDetection()
+        {
+            if (_needleDetector == null || !_needleDetector.IsReady)
+            {
+                NeedleStatus = _needleDetector == null ? "No needle detector" : _needleDetector.Status;
+                _hasNeedleWorld = false;
+                return;
+            }
+
+            if (_runNeedleOnlyWhileLocked && _lockState != LockState.Locked)
+            {
+                NeedleStatus = "Idle until arm locked";
+                _hasNeedleWorld = false;
+                return;
+            }
+
+            _needleDetector.Run(_cameraSource.CurrentTexture);
+
+            if (_needleDetector.LastRunConsumedNewResult && _needleDetector.TryGetLatest(out var needle))
+            {
+                // The needle only matters near the locked arm, so the arm's depth is the best
+                // fallback when the depth raycast misses (thin needle/hand rarely in the mesh).
+                float fallbackDepth = _hasSmoothedArmWorld
+                    ? Vector3.Distance(_cameraSource.CameraPose.position,
+                                       (_smoothedShoulderWorld + _smoothedWristWorld) * 0.5f)
+                    : Mathf.Clamp(0.6f, _minDepthMeters, _maxDepthMeters);
+
+                Vector3 tipWorld = ProjectImagePoint(needle.TipImage, fallbackDepth, out _);
+                Vector3 hubWorld = ProjectImagePoint(needle.HubImage, fallbackDepth, out _);
+
+                if (!_hasNeedleWorld)
+                {
+                    _smoothedNeedleTipWorld = tipWorld;
+                    _smoothedNeedleHubWorld = hubWorld;
+                }
+                else
+                {
+                    float t = 1f - _needleWorldSmoothing;
+                    _smoothedNeedleTipWorld = Vector3.Lerp(_smoothedNeedleTipWorld, tipWorld, t);
+                    _smoothedNeedleHubWorld = Vector3.Lerp(_smoothedNeedleHubWorld, hubWorld, t);
+                }
+
+                _hasNeedleWorld = true;
+                _needleLastSeenTime = Time.time;
+                NeedleStatus = $"Needle {needle.Confidence:F2} @ {Vector3.Distance(_cameraSource.CameraPose.position, _smoothedNeedleTipWorld):F2} m";
+            }
+            else if (_hasNeedleWorld && Time.time - _needleLastSeenTime > _needleLostAfterSeconds)
+            {
+                _hasNeedleWorld = false;
+                NeedleStatus = $"Needle lost ({_needleDetector.Status})";
+            }
+            else if (!_hasNeedleWorld)
+            {
+                NeedleStatus = $"Searching ({_needleDetector.Status})";
+            }
+        }
+
         public float GetEstimatedDepth(PersonDetection p) => EstimateDepth(p);
+
+        /// <summary>
+        /// Starts / pauses the MediaPipe pipeline so it only costs anything while its output
+        /// can actually be consumed by RunPrimaryDetector:
+        ///   - custom detector unusable  -> MediaPipe is the only detector, run it;
+        ///   - fallback disabled          -> results would be thrown away, keep it off;
+        ///   - fallback enabled           -> run only after the custom detector has been starved
+        ///                                  for a while, pause again once it recovers.
+        /// While the target lock is frozen every detection is ignored anyway, so the pipeline
+        /// is not woken up during a frozen lock.
+        /// </summary>
+        private void UpdateMediaPipeLifecycle()
+        {
+            if (!_manageMediaPipeLifecycle || _mediaPipeRunner == null ||
+                _mediaPipeDetector == null || !_mediaPipeDetector.isActiveAndEnabled) return;
+
+            bool customUsable = _useCustomArmDetector && _customArmDetector != null && _customArmDetector.IsReady;
+            bool resultsUsable = !customUsable || _fallbackToMediaPipe;
+            bool starving = (!customUsable || _cachedCustomDetections.Count == 0) && !IsLockFrozen();
+
+            if (resultsUsable && starving)
+            {
+                _mediaPipeFedSeconds = 0f;
+                _mediaPipeStarvedSeconds += Time.deltaTime;
+                if (_mediaPipeStarvedSeconds >= _mediaPipeActivateAfterSeconds)
+                    SetMediaPipeRunning(true);
+            }
+            else
+            {
+                _mediaPipeStarvedSeconds = 0f;
+                _mediaPipeFedSeconds += Time.deltaTime;
+                if (!resultsUsable || _mediaPipeFedSeconds >= _mediaPipePauseAfterSeconds)
+                    SetMediaPipeRunning(false);
+            }
+        }
+
+        private void SetMediaPipeRunning(bool run)
+        {
+            if (run)
+            {
+                if (!_mediaPipeRunnerStarted)
+                {
+                    _mediaPipeRunner.enabled = true;   // fires the runner's deferred Start() -> bootstrap -> Play()
+                    _mediaPipeRunnerStarted = true;
+                    _mediaPipeRunnerPaused = false;
+                    Debug.Log("[ArmManager] MediaPipe fallback pipeline started.");
+                }
+                else if (_mediaPipeRunnerPaused)
+                {
+                    _mediaPipeRunnerResume?.Invoke(_mediaPipeRunner, null);
+                    _mediaPipeRunnerPaused = false;
+                    Debug.Log("[ArmManager] MediaPipe fallback pipeline resumed.");
+                }
+            }
+            else if (_mediaPipeRunnerStarted && !_mediaPipeRunnerPaused)
+            {
+                _mediaPipeRunnerPause?.Invoke(_mediaPipeRunner, null);
+                _mediaPipeRunnerPaused = true;
+                Debug.Log("[ArmManager] MediaPipe fallback pipeline paused (custom detector active).");
+            }
+        }
 
         private bool HasReadyDetector()
         {
@@ -264,6 +709,7 @@ namespace ARArmDetection
 
         private List<PersonDetection> RunPrimaryDetector()
         {
+            _freshResultThisFrame = false;
             bool canRunCustom = _useCustomArmDetector && _customArmDetector != null && _customArmDetector.IsReady;
             if (canRunCustom)
             {
@@ -275,6 +721,7 @@ namespace ARArmDetection
                 {
                     var detections = _customArmDetector.Run(_cameraSource.CurrentTexture);
                     if (_customArmDetector.LastRunScheduledInference) InferenceCount++;
+                    _freshResultThisFrame = _customArmDetector.LastRunConsumedNewResult;
 
                     _cachedCustomDetections.Clear();
                     _cachedCustomDetections.AddRange(detections);
@@ -291,6 +738,7 @@ namespace ARArmDetection
             {
                 var mediaPipePersons = _mediaPipeDetector.Run(null);
                 if (_mediaPipeDetector.LastRunConsumedNewResult) InferenceCount++;
+                _freshResultThisFrame = _mediaPipeDetector.LastRunConsumedNewResult;
                 _currentDetectionsAreMediaPipe = true;
                 ManagerStatus = "Running [MediaPipe fallback]";
                 return mediaPipePersons;
@@ -308,43 +756,54 @@ namespace ARArmDetection
             float armDepth = EstimateDepthFromArmLength(p, focalPx);
             if (armDepth > 0f) return armDepth;
 
-            float bboxH = Mathf.Max(1f, p.ImageBounds.height);
-            float depth = _assumedPersonHeightMeters * focalPx / bboxH;
+            // The arm-only model's box IS the arm, so its long side maps directly to the
+            // known real arm length. (The old fallback assumed a full 1.7 m person filled
+            // the box, which placed the forearm-sized box ~3x too far away.)
+            float longSidePx = Mathf.Max(1f, Mathf.Max(p.ImageBounds.width, p.ImageBounds.height));
+            float depth = _assumedArmLengthMeters * focalPx / longSidePx;
             return Mathf.Clamp(depth, _minDepthMeters, _maxDepthMeters);
         }
 
+        private static readonly (int Shoulder, int Wrist)[] ArmKeypointPairs =
+        {
+            ((int)CocoKeypoint.LeftShoulder, (int)CocoKeypoint.LeftWrist),
+            ((int)CocoKeypoint.RightShoulder, (int)CocoKeypoint.RightWrist),
+        };
+
         private float EstimateDepthFromArmLength(PersonDetection p, float focalPx)
         {
-            const float AssumedArmLengthMeters = 0.65f;
             float bestConf = 0f;
             Vector2 bestShoulder = default;
             Vector2 bestWrist = default;
 
-            foreach (var pair in new[]
+            foreach (var pair in ArmKeypointPairs)
             {
-                ((int)CocoKeypoint.LeftShoulder, (int)CocoKeypoint.LeftWrist),
-                ((int)CocoKeypoint.RightShoulder, (int)CocoKeypoint.RightWrist),
-            })
-            {
-                float conf = Mathf.Min(p.Keypoints[pair.Item1].Confidence, p.Keypoints[pair.Item2].Confidence);
+                float conf = Mathf.Min(p.Keypoints[pair.Shoulder].Confidence, p.Keypoints[pair.Wrist].Confidence);
                 if (conf > bestConf)
                 {
                     bestConf = conf;
-                    bestShoulder = p.Keypoints[pair.Item1].ImagePos;
-                    bestWrist = p.Keypoints[pair.Item2].ImagePos;
+                    bestShoulder = p.Keypoints[pair.Shoulder].ImagePos;
+                    bestWrist = p.Keypoints[pair.Wrist].ImagePos;
                 }
             }
 
             if (bestConf < 0.05f) return 0f;
             float armPx = Vector2.Distance(bestShoulder, bestWrist);
-            if (armPx < 5f) return 0f;
-            return Mathf.Clamp(AssumedArmLengthMeters * focalPx / armPx, _minDepthMeters, _maxDepthMeters);
+
+            // Sanity-gate against the box: the current model's keypoint head is untrained
+            // (pose mAP ~0), so its keypoints can collapse to a point or land anywhere.
+            // A real proximal→distal span is comparable to the box's long side; anything
+            // far off means the keypoints are garbage and the box heuristic should win.
+            float longSidePx = Mathf.Max(p.ImageBounds.width, p.ImageBounds.height);
+            if (armPx < 5f || armPx < longSidePx * 0.3f || armPx > longSidePx * 1.5f) return 0f;
+
+            return Mathf.Clamp(_assumedArmLengthMeters * focalPx / armPx, _minDepthMeters, _maxDepthMeters);
         }
 
         private bool TryArm(PersonDetection p, Side side, float depthHeuristic,
                             ref bool found, ref ArmCandidate best,
                             ref int keypointPassCount, ref int filterPassCount,
-                            ref int depthRaycastHits)
+                            ref int gateRejectCount, ref int depthRaycastHits)
         {
             int shoulderIdx = side == Side.Left ? (int)CocoKeypoint.LeftShoulder : (int)CocoKeypoint.RightShoulder;
             int elbowIdx = side == Side.Left ? (int)CocoKeypoint.LeftElbow : (int)CocoKeypoint.RightElbow;
@@ -379,19 +838,74 @@ namespace ARArmDetection
             }
             else if (_useFixedWorldAxis)
             {
-                // For a stationary mannequin, a stable heuristic depth is less jittery than
-                // per-frame Depth API raycasts, which can make the overlay appear to zoom.
-                float stableDepth = GetStableFixedAxisDepth(depthHeuristic);
-                Vector3 centerWorld = _cameraSource.ImagePointToWorld(p.ImageBounds.center, stableDepth);
+                // Anchor the box centre at REAL sensed depth (Depth API) rather than the
+                // monocular box-size guess. The size guess changes with viewing angle,
+                // foreshortening and box jitter, so it lands the arm at a different world
+                // point — and a wrong depth — from each viewpoint: that is what makes the
+                // overlay lock in a different place from different positions, and (because a
+                // wrong-depth anchor sits in front of/behind the real arm) appear to slide via
+                // parallax as the head moves. Sensed depth is view-independent, so it fixes both.
+                float depth;
+                string depthSrc;
+                if (TrySenseCenterDepth(p.ImageBounds, out float sensedDepth))
+                {
+                    depth = GetStableFixedAxisDepth(sensedDepth);
+                    depthRaycastHits++;
+                    depthSrc = $"sensed {depth:F2} m";
+                }
+                else if (_hasStableFixedAxisDepth)
+                {
+                    // Depth API missed this frame (thin limb / edge pixel): hold the last good
+                    // sensed depth rather than snapping to the unreliable box-size guess.
+                    depth = _stableFixedAxisDepth;
+                    depthSrc = $"held {depth:F2} m (no depth hit)";
+                }
+                else
+                {
+                    // Nothing sensed yet — bootstrap from the box-size heuristic until the
+                    // first real depth hit arrives.
+                    depth = GetStableFixedAxisDepth(depthHeuristic);
+                    depthSrc = $"heuristic {depth:F2} m";
+                }
+
+                // Manual depth trim: shift the anchor along the view ray to seat it exactly on
+                // the arm. Kills residual parallax when the auto depth is slightly off (or when
+                // the Depth API can't sense the arm and we fell back to the heuristic).
+                depth = Mathf.Clamp(depth + _fixedAxisDepthOffsetMeters, _minDepthMeters, _maxDepthMeters);
+
+                Vector3 centerWorld = _cameraSource.ImagePointToWorld(p.ImageBounds.center, depth);
                 GetFixedAxisEndpoints(centerWorld, out shoulderWorld, out wristWorld);
-                DepthAxisStatus = $"Fixed-axis fallback - yaw={_fixedArmYawDegrees:F0} deg, " +
-                                  $"length={_fixedArmLengthMeters:F2} m, depth={stableDepth:F2} m";
+                DepthAxisStatus = $"Fixed-axis - yaw={_fixedArmYawDegrees:F0} deg, " +
+                                  $"length={_fixedArmLengthMeters:F2} m, depth={depthSrc}" +
+                                  (Mathf.Abs(_fixedAxisDepthOffsetMeters) > 1e-4f ? $" (trim {_fixedAxisDepthOffsetMeters:+0.00;-0.00} m)" : "");
             }
             else
             {
                 shoulderWorld = ProjectImagePoint(arm.ShoulderImage, depthHeuristic, out bool _);
                 wristWorld = ProjectImagePoint(arm.WristImage, depthHeuristic, out bool wristHit);
                 if (wristHit) depthRaycastHits++;
+            }
+
+            // Keep endpoint order consistent with the tracked arm: the depth-axis PCA has a
+            // sign ambiguity, so its min/max endpoints can swap between frames and flip the
+            // model 180°. Align each candidate with the previous smoothed direction instead.
+            if (_hasSmoothedArmWorld &&
+                Vector3.Dot(wristWorld - shoulderWorld, _smoothedWristWorld - _smoothedShoulderWorld) < 0f)
+            {
+                (shoulderWorld, wristWorld) = (wristWorld, shoulderWorld);
+            }
+
+            // Hard gate while locked: a detection far from the locked arm is a DIFFERENT arm.
+            // Reject it outright so nothing can steal an existing lock, no matter its score.
+            if (_lockState == LockState.Locked && _hasSmoothedArmWorld)
+            {
+                Vector3 lockedMid = (_smoothedShoulderWorld + _smoothedWristWorld) * 0.5f;
+                Vector3 candidateMid = (shoulderWorld + wristWorld) * 0.5f;
+                if (Vector3.Distance(lockedMid, candidateMid) > CurrentLockGateRadius())
+                {
+                    gateRejectCount++;
+                    return false;
+                }
             }
 
             float effectiveDepth = Vector3.Distance(_cameraSource.CameraPose.position, wristWorld);
@@ -413,6 +927,7 @@ namespace ARArmDetection
                     Wrist = wristWorld,
                     Depth = effectiveDepth,
                     Score = score,
+                    Confidence = arm.Confidence,
                     ShoulderImage = arm.ShoulderImage,
                     ElbowImage = arm.ElbowImage,
                     WristImage = arm.WristImage,
@@ -444,7 +959,6 @@ namespace ARArmDetection
 
             _stableArmSide = selectedSide;
             _hasStableArmImage = true;
-            _stableArmLostFrames = 0;
 
             if (!_hasSmoothedArmWorld)
             {
@@ -469,15 +983,12 @@ namespace ARArmDetection
             }
         }
 
-        private bool TryUseLockedArmOnlyCandidate(ref bool found, ref ArmCandidate best, ref int selectedIdx, ref Side selectedSide)
+        /// <summary>Reuses the smoothed world pose of the locked arm on frames where no
+        /// gated detection came in, keeping the overlay world-anchored on the target.</summary>
+        private void UseHeldLockPose(ref bool found, ref ArmCandidate best, ref int selectedIdx, ref Side selectedSide)
         {
-            if (!_hasStableArmImage || _stableArmLostFrames >= _armOnlyLockLostFrames)
-            {
-                ResetArmStability();
-                return false;
-            }
+            if (!_hasStableArmImage || !_hasSmoothedArmWorld) return;
 
-            _stableArmLostFrames++;
             LastDetections.Clear();
             LastDetections.Add(_stableArmDetection);
             selectedIdx = 0;
@@ -488,14 +999,112 @@ namespace ARArmDetection
                 Wrist = _smoothedWristWorld,
                 Depth = Vector3.Distance(_cameraSource.CameraPose.position, _smoothedWristWorld),
                 Score = _stableArmDetection.Confidence,
+                Confidence = _stableArmDetection.Confidence,
                 ShoulderImage = _stableArmDetection.Keypoints[(int)(selectedSide == Side.Left ? CocoKeypoint.LeftShoulder : CocoKeypoint.RightShoulder)].ImagePos,
                 ElbowImage = _stableArmDetection.Keypoints[(int)(selectedSide == Side.Left ? CocoKeypoint.LeftElbow : CocoKeypoint.RightElbow)].ImagePos,
                 WristImage = _stableArmDetection.Keypoints[(int)(selectedSide == Side.Left ? CocoKeypoint.LeftWrist : CocoKeypoint.RightWrist)].ImagePos,
                 Side = selectedSide,
             };
             found = true;
-            return true;
         }
+
+        /// <summary>Counts consecutive NEW inference results with a spatially consistent
+        /// candidate and promotes Searching → Acquiring → Locked once enough have been seen.
+        /// Cached detections served between inferences neither advance nor reset progress —
+        /// otherwise a single inference result, re-served over several rendered frames, would
+        /// satisfy the consistency requirement on its own.</summary>
+        private void UpdateAcquisition(in ArmCandidate candidate)
+        {
+            if (candidate.Confidence < _acquireMinConfidence)
+            {
+                // Too weak to start a lock; treat like a dropout so brief dips don't reset progress.
+                TickAcquisitionGap();
+                if (_lockState == LockState.Searching)
+                    LockStatus = $"Searching (weak detection {candidate.Confidence:F2} < {_acquireMinConfidence:F2})";
+                return;
+            }
+
+            _acquireGapSeconds = 0f;
+
+            if (!_freshResultThisFrame)
+            {
+                if (_lockState == LockState.Acquiring)
+                    LockStatus = $"Acquiring {_acquireFrameCount}/{_acquireConsistentFrames}";
+                return;
+            }
+
+            Vector3 mid = (candidate.Shoulder + candidate.Wrist) * 0.5f;
+            bool continues = _acquireFrameCount > 0 &&
+                             Vector3.Distance(mid, _acquireMidWorld) <= _acquireRadiusMeters;
+            if (continues)
+            {
+                _acquireFrameCount++;
+                // Anchor on the running average so a drifting false-positive chain (each step
+                // inside the radius, total drift unbounded) cannot ratchet its way to a lock.
+                _acquireMidWorld = Vector3.Lerp(_acquireMidWorld, mid, 1f / _acquireFrameCount);
+            }
+            else
+            {
+                _acquireFrameCount = 1;
+                _acquireMidWorld = mid;
+            }
+
+            if (_acquireFrameCount >= _acquireConsistentFrames)
+            {
+                _lockState = LockState.Locked;
+                _lockLostSeconds = 0f;
+                _lockAcquiredTime = Time.time;
+                _lockHeadStartPos = _cameraSource.CameraPose.position;
+                _refineHeadBaseline = 0f;
+                Debug.Log($"[ArmManager] Target lock acquired at {mid} after {_acquireFrameCount} consistent results.");
+            }
+            else
+            {
+                _lockState = LockState.Acquiring;
+                LockStatus = $"Acquiring {_acquireFrameCount}/{_acquireConsistentFrames}";
+            }
+        }
+
+        /// <summary>Called on frames with no usable candidate. During acquisition a short
+        /// dropout is tolerated (the detector only reports every few frames); progress only
+        /// resets after _acquireGapToleranceSeconds without a strong candidate.</summary>
+        private void TickAcquisitionGap()
+        {
+            if (_lockState != LockState.Acquiring)
+            {
+                _lockState = LockState.Searching;
+                _acquireFrameCount = 0;
+                _acquireGapSeconds = 0f;
+                LockStatus = "Searching";
+                return;
+            }
+
+            _acquireGapSeconds += Time.deltaTime;
+            if (_acquireGapSeconds > _acquireGapToleranceSeconds)
+            {
+                _lockState = LockState.Searching;
+                _acquireFrameCount = 0;
+                _acquireGapSeconds = 0f;
+                LockStatus = "Searching";
+            }
+            else
+            {
+                LockStatus = $"Acquiring {_acquireFrameCount}/{_acquireConsistentFrames} " +
+                             $"(gap {_acquireGapSeconds:F1}s)";
+            }
+        }
+
+        /// <summary>True once the lock has passed its refinement window and is frozen in
+        /// world space (all detections ignored until Unlock()).</summary>
+        private bool IsLockFrozen() =>
+            _lockState == LockState.Locked && _freezeWhileLocked &&
+            Time.time - _lockAcquiredTime >= _lockRefineSeconds;
+
+        /// <summary>Gate radius for lock updates; grows while the arm is undetected so a
+        /// target that moved during a dropout can still be re-captured.</summary>
+        private float CurrentLockGateRadius() =>
+            Mathf.Min(_lockGateMaxRadiusMeters,
+                      _lockGateRadiusMeters + _lockLostSeconds * _lockGateGrowPerSecondLost);
 
         private static PersonDetection BuildSmoothedDetection(PersonDetection source, ArmCandidate arm, Side side)
         {
@@ -530,7 +1139,6 @@ namespace ARArmDetection
         {
             _hasStableArmImage = false;
             _hasSmoothedArmWorld = false;
-            _stableArmLostFrames = 0;
             _hasStableFixedAxisDepth = false;
         }
 
@@ -551,6 +1159,49 @@ namespace ARArmDetection
             }
 
             return _stableFixedAxisDepth;
+        }
+
+        // Sample pattern for TrySenseCenterDepth: box centre plus a cross at ±20% of the box
+        // size. The offsets stay well inside the arm silhouette so we sample the limb, not the
+        // background behind a loose box. Stored as box-relative fractions.
+        private static readonly Vector2[] CenterDepthSampleOffsets =
+        {
+            new Vector2( 0f,   0f),
+            new Vector2(-0.2f, 0f),
+            new Vector2( 0.2f, 0f),
+            new Vector2( 0f,  -0.2f),
+            new Vector2( 0f,   0.2f),
+        };
+
+        /// <summary>
+        /// Real, view-independent depth (metres from the RGB camera) of the arm at the given
+        /// box, sampled from the Depth API. Raycasts the box centre plus a small inner cross and
+        /// returns the MEDIAN hit distance, so a single dropped or edge pixel can't skew it.
+        /// Returns false when the Depth API is unavailable or nothing was hit this frame.
+        /// </summary>
+        private bool TrySenseCenterDepth(Rect imageBounds, out float depth)
+        {
+            depth = 0f;
+            if (_depthRaycaster == null || !EnvironmentRaycastManager.IsSupported) return false;
+
+            var samples = _centerDepthSamples;
+            samples.Clear();
+            Vector3 camPos = _cameraSource.CameraPose.position;
+            Vector2 center = imageBounds.center;
+
+            foreach (var o in CenterDepthSampleOffsets)
+            {
+                Vector2 pt = new Vector2(center.x + o.x * imageBounds.width,
+                                         center.y + o.y * imageBounds.height);
+                var ray = _cameraSource.ImagePointToRay(pt);
+                if (_depthRaycaster.Raycast(ray, out var hit, _maxDepthMeters))
+                    samples.Add(Vector3.Distance(camPos, hit.point));
+            }
+
+            if (samples.Count == 0) return false;
+            samples.Sort();
+            depth = Mathf.Clamp(samples[samples.Count / 2], _minDepthMeters, _maxDepthMeters);
+            return true;
         }
 
         /// <summary>
@@ -585,13 +1236,26 @@ namespace ARArmDetection
                 return false;
             }
 
+            // Same box already estimated this frame (e.g. the Right-side pass of the same
+            // detection): reuse the result instead of re-raycasting the whole grid.
+            if (_axisCacheFrame == Time.frameCount && _axisCacheBounds == imageBounds)
+            {
+                endA = _axisCacheEndA;
+                endB = _axisCacheEndB;
+                return _axisCacheResult;
+            }
+            _axisCacheFrame = Time.frameCount;
+            _axisCacheBounds = imageBounds;
+            _axisCacheResult = false;
+
             int grid = _depthSampleGrid;
             // Shrink sampling inward from the box edges so background pixels (where the box
             // slightly overshoots the real arm silhouette) don't get raycasted.
             float padX = imageBounds.width * 0.1f;
             float padY = imageBounds.height * 0.1f;
 
-            var hits = new List<Vector3>(grid * grid);
+            var hits = _axisHits;
+            hits.Clear();
             for (int gx = 0; gx < grid; gx++)
             {
                 float u = grid > 1 ? gx / (float)(grid - 1) : 0.5f;
@@ -617,12 +1281,14 @@ namespace ARArmDetection
             // Outlier rejection: keep points near the median depth so any background pixels
             // that slipped through don't skew the axis away from the true arm surface.
             Vector3 camPos = _cameraSource.CameraPose.position;
-            var depths = new List<float>(hits.Count);
+            var depths = _axisDepths;
+            depths.Clear();
             foreach (var h in hits) depths.Add(Vector3.Distance(camPos, h));
             depths.Sort();
             float medianDepth = depths[depths.Count / 2];
 
-            var filtered = new List<Vector3>(hits.Count);
+            var filtered = _axisFilteredPoints;
+            filtered.Clear();
             foreach (var h in hits)
                 if (Mathf.Abs(Vector3.Distance(camPos, h) - medianDepth) < 0.15f)
                     filtered.Add(h);
@@ -651,8 +1317,26 @@ namespace ARArmDetection
                 if (proj > maxProj) { maxProj = proj; maxPt = p; }
             }
 
+            // The raw extreme hits jitter with the sample grid and rarely span the full
+            // arm; the mannequin's real length is known and constant, so keep the sensed
+            // midpoint + direction and snap the endpoints to that length.
+            if (_normalizeDepthAxisLength && _fixedArmLengthMeters > 0.01f)
+            {
+                Vector3 mid = (minPt + maxPt) * 0.5f;
+                Vector3 dir = maxPt - minPt;
+                if (dir.sqrMagnitude > 1e-6f)
+                {
+                    Vector3 half = dir.normalized * (_fixedArmLengthMeters * 0.5f);
+                    minPt = mid - half;
+                    maxPt = mid + half;
+                }
+            }
+
             endA = _swapDepthAxisEndpoints ? maxPt : minPt;
             endB = _swapDepthAxisEndpoints ? minPt : maxPt;
+            _axisCacheResult = true;
+            _axisCacheEndA = endA;
+            _axisCacheEndB = endB;
             DepthAxisStatus = $"OK - {filtered.Count}/{hits.Count} samples, axis length {Vector3.Distance(endA, endB):F2} m";
             return true;
         }

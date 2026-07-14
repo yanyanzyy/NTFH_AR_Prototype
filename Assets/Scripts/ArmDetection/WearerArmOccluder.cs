@@ -39,9 +39,9 @@ namespace ARArmDetection
                  "no need to navigate the bone list in the Inspector.")]
         [SerializeField] private OVRSkeleton[] _wearerSkeletons;
 
-        [Tooltip("Radius of each sphere occluder in metres. 0.12 m gives ~24 cm diameter, " +
-                 "enough to cover the wrist / lower hand.")]
-        [SerializeField] private float _occluderRadius = 0.12f;
+        [Tooltip("Radius of each wrist occluder in metres. Keep this close to wrist size so " +
+                 "hands provide depth feedback without cutting a large circle from world UI.")]
+        [SerializeField] private float _occluderRadius = 0.055f;
 
         private GameObject[] _transformOccluders;  // one per _wearerArmTransforms entry
         private GameObject[] _skeletonOccluders;   // one per _wearerSkeletons entry

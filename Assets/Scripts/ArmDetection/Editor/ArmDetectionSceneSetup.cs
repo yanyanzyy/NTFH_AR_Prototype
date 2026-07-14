@@ -119,6 +119,191 @@ namespace ARArmDetection.EditorTools
             Selection.activeGameObject = go;
         }
 
+        /// <summary>
+        /// Adds the UNLOCK ARM button to an existing ArmDetectionPrototype scene.
+        /// Use this on scenes created before the target-lock feature existed.
+        /// </summary>
+        [MenuItem("Tools/AR Arm Detection/Add Arm Unlock Button")]
+        public static void AddArmUnlockButton()
+        {
+            var prototype = GameObject.Find("ArmDetectionPrototype");
+            if (prototype == null)
+            {
+                Debug.LogError("[ArmDetection] ArmDetectionPrototype not found. Add the prototype first.");
+                return;
+            }
+            if (prototype.GetComponentInChildren<ArmLockButton>() != null)
+            {
+                Debug.Log("[ArmDetection] ArmLockButton already present.");
+                return;
+            }
+
+            var manager = prototype.GetComponent<ArmDetectionManager>();
+            var go = new GameObject("ArmLockButton");
+            go.transform.SetParent(prototype.transform, false);
+            var lockButton = go.AddComponent<ArmLockButton>();
+            Undo.RegisterCreatedObjectUndo(go, "Add Arm Unlock Button");
+
+            if (manager != null) WireReference(lockButton, "_manager", manager);
+            EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            Selection.activeGameObject = go;
+            Debug.Log("[ArmDetection] Added ArmLockButton (UNLOCK ARM panel + controller B shortcut).");
+        }
+
+        private const string NeedleModelPath = "Assets/Models/best_theothergroup.onnx";
+
+        /// <summary>
+        /// Adds (or fixes) the vision needle pipeline in an existing ArmDetectionPrototype
+        /// scene: the NeedleDetector (SyringePose model from the Jin-Rui branch, single
+        /// class, 4 keypoints), the NeedleAngleEstimator (insertion angle vs horizontal),
+        /// and the NeedleVisualizer (tip/hub markers + angle-coloured line). Safe to run
+        /// again: existing components are re-wired and their model/layout config updated,
+        /// not duplicated.
+        /// </summary>
+        [MenuItem("Tools/AR Arm Detection/Add Needle Detector")]
+        public static void AddNeedleDetector()
+        {
+            var prototype = GameObject.Find("ArmDetectionPrototype");
+            if (prototype == null)
+            {
+                Debug.LogError("[ArmDetection] ArmDetectionPrototype not found. Add the prototype first.");
+                return;
+            }
+
+            var manager = prototype.GetComponent<ArmDetectionManager>();
+
+            // ── Detector (create or update) ─────────────────────────────────────────
+            var detector = prototype.GetComponentInChildren<NeedleDetector>();
+            if (detector == null)
+            {
+                var detectorGO = new GameObject("NeedleDetector");
+                detectorGO.transform.SetParent(prototype.transform, false);
+                detector = detectorGO.AddComponent<NeedleDetector>();
+                Undo.RegisterCreatedObjectUndo(detectorGO, "Add Needle Detector");
+            }
+
+            var model = AssetDatabase.LoadAssetAtPath<Unity.InferenceEngine.ModelAsset>(NeedleModelPath);
+            if (model != null)
+                WireReference(detector, "_modelAsset", model);
+            else
+                Debug.LogWarning($"[ArmDetection] {NeedleModelPath} not found — assign your needle ONNX " +
+                                 "to the NeedleDetector's Model Asset slot manually.");
+
+            // SyringePose layout: 640 input, single class, needle class 0. Group 2 ran it at 0.15.
+            WireInt(detector, "_inputSize", 640);
+            WireInt(detector, "_numClasses", 1);
+            WireInt(detector, "_needleClassId", 0);
+            WireFloat(detector, "_confidenceThreshold", 0.15f);
+
+            if (manager != null) WireReference(manager, "_needleDetector", detector);
+
+            // ── Angle estimator + visualizer (ported from the Jin-Rui branch) ───────
+            var estimator = prototype.GetComponentInChildren<NeedleAngleEstimator>();
+            if (estimator == null)
+            {
+                var estimatorGO = new GameObject("NeedleAngleEstimator");
+                estimatorGO.transform.SetParent(prototype.transform, false);
+                estimator = estimatorGO.AddComponent<NeedleAngleEstimator>();
+                Undo.RegisterCreatedObjectUndo(estimatorGO, "Add Needle Angle Estimator");
+            }
+            if (manager != null) WireReference(estimator, "_armManager", manager);
+
+            var visualizer = prototype.GetComponentInChildren<NeedleVisualizer>();
+            if (visualizer == null)
+            {
+                var visualizerGO = new GameObject("NeedleVisualizer");
+                visualizerGO.transform.SetParent(prototype.transform, false);
+                visualizer = visualizerGO.AddComponent<NeedleVisualizer>();
+                Undo.RegisterCreatedObjectUndo(visualizerGO, "Add Needle Visualizer");
+            }
+            if (manager != null) WireReference(visualizer, "_manager", manager);
+            WireReference(visualizer, "_detector", detector);
+            WireReference(visualizer, "_angleEstimator", estimator);
+
+            var hud = prototype.GetComponentInChildren<ArmDetectionDebugHUD>();
+            if (hud != null) WireReference(hud, "_angleEstimator", estimator);
+
+            EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            Selection.activeGameObject = detector.gameObject;
+            Debug.Log("[ArmDetection] Needle pipeline wired: NeedleDetector (SyringePose model) + " +
+                      "NeedleAngleEstimator + NeedleVisualizer.");
+        }
+
+        /// <summary>
+        /// Adds (or re-wires) the InjectionSequenceEvaluator — the staged
+        /// contact → vein spot → angle → depth assessment — on the VeinSystem object,
+        /// next to the VeinMap it queries. Safe to run again.
+        /// </summary>
+        [MenuItem("Tools/AR Arm Detection/Add Injection Sequence Evaluator")]
+        public static void AddInjectionSequenceEvaluator()
+        {
+            var veinMap = Object.FindFirstObjectByType<VeinMap>();
+            if (veinMap == null)
+            {
+                Debug.LogError("[ArmDetection] No VeinMap found in the scene. Set up the VeinSystem " +
+                               "object (VeinMap + InjectionSiteDetector + feedback components) first.");
+                return;
+            }
+
+            var host = veinMap.gameObject;
+            var evaluator = host.GetComponent<InjectionSequenceEvaluator>();
+            if (evaluator == null)
+            {
+                evaluator = Undo.AddComponent<InjectionSequenceEvaluator>(host);
+            }
+
+            var manager = Object.FindFirstObjectByType<ArmDetectionManager>();
+            var angleEstimator = Object.FindFirstObjectByType<NeedleAngleEstimator>();
+
+            if (manager != null) WireReference(evaluator, "_armManager", manager);
+            else Debug.LogWarning("[ArmDetection] No ArmDetectionManager in scene — wire _armManager manually.");
+            WireReference(evaluator, "_veinMap", veinMap);
+
+            // VeinMap needs the overlay to resolve prefab-authored vein paths (Option A).
+            var overlay = Object.FindFirstObjectByType<ArmOverlay>();
+            if (overlay != null) WireReference(veinMap, "_overlay", overlay);
+            if (angleEstimator != null) WireReference(evaluator, "_angleEstimator", angleEstimator);
+            else Debug.LogWarning("[ArmDetection] No NeedleAngleEstimator in scene — run " +
+                                  "'Add Needle Detector' first, then re-run this.");
+
+            var hud = Object.FindFirstObjectByType<ArmDetectionDebugHUD>();
+            if (hud != null) WireReference(hud, "_injectionEvaluator", evaluator);
+
+            EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            Selection.activeGameObject = host;
+            Debug.Log("[ArmDetection] InjectionSequenceEvaluator wired on '" + host.name + "' " +
+                      "(contact -> vein spot -> angle -> depth).");
+        }
+
+        /// <summary>
+        /// Adds the runtime vein path visualizer (LineRenderers in the headset) so the
+        /// prefab-authored vein waypoints can be verified on device. VeinMap's gizmos are
+        /// editor-only. Safe to run again; also (re)wires VeinMap._overlay.
+        /// </summary>
+        [MenuItem("Tools/AR Arm Detection/Add Vein Path Visualizer")]
+        public static void AddVeinPathVisualizer()
+        {
+            var veinMap = Object.FindFirstObjectByType<VeinMap>();
+            if (veinMap == null)
+            {
+                Debug.LogError("[ArmDetection] No VeinMap found in the scene. Set up the VeinSystem object first.");
+                return;
+            }
+
+            var host = veinMap.gameObject;
+            var visualizer = host.GetComponent<VeinPathVisualizer>();
+            if (visualizer == null) visualizer = Undo.AddComponent<VeinPathVisualizer>(host);
+            WireReference(visualizer, "_veinMap", veinMap);
+
+            var overlay = Object.FindFirstObjectByType<ArmOverlay>();
+            if (overlay != null) WireReference(veinMap, "_overlay", overlay);
+            else Debug.LogWarning("[ArmDetection] No ArmOverlay found — prefab vein paths won't resolve.");
+
+            EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            Selection.activeGameObject = host;
+            Debug.Log("[ArmDetection] VeinPathVisualizer added — vein paths render as coloured lines once the arm locks.");
+        }
+
         [MenuItem("Tools/AR Arm Detection/Add MediaPipe Hand Detector")]
         public static void AddMediaPipeHandDetector()
         {
@@ -221,8 +406,16 @@ namespace ARArmDetection.EditorTools
             var overlayGO = CreateChild(root, "Overlay");
             var overlay   = overlayGO.AddComponent<ArmOverlay>();
 
+            var needleGO = CreateChild(root, "NeedleDetector");
+            var needleDetector = needleGO.AddComponent<NeedleDetector>();
+            var needleModel = AssetDatabase.LoadAssetAtPath<Unity.InferenceEngine.ModelAsset>(NeedleModelPath);
+            if (needleModel != null) WireReference(needleDetector, "_modelAsset", needleModel);
+
             var modeButtonGO = CreateChild(root, "ModeButton");
             var modeButton   = modeButtonGO.AddComponent<DetectionModeButton>();
+
+            var lockButtonGO = CreateChild(root, "ArmLockButton");
+            var lockButton   = lockButtonGO.AddComponent<ArmLockButton>();
 
             // ArmBoundingBoxDebug only draws geometry for the
             // *selected* arm (the one the manager picked and ArmOverlay renders).
@@ -240,6 +433,7 @@ namespace ARArmDetection.EditorTools
             var manager = root.AddComponent<ArmDetectionManager>();
 
             WireReference(manager,    "_cameraSource",  cameraSource);
+            WireReference(manager,    "_needleDetector", needleDetector);
             WireReference(manager,    "_mediaPipeDetector", mediaPipeDetector);
             WireReference(manager,    "_wearerFilter",  filter);
             WireReference(manager,    "_overlay",       overlay);
@@ -247,6 +441,7 @@ namespace ARArmDetection.EditorTools
             WireReference(mediaPipeDetector, "_cameraSource", cameraSource);
             WireReference(mediaPipeBridge, "_target", mediaPipeDetector);
             WireReference(modeButton, "_manager",       manager);
+            WireReference(lockButton, "_manager",       manager);
             WireReference(bboxDebug,  "_manager",       manager);
             WireReference(bboxDebug,  "_cameraSource",  cameraSource);
 
@@ -276,6 +471,32 @@ namespace ARArmDetection.EditorTools
                 return;
             }
             prop.objectReferenceValue = value;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void WireInt(Object owner, string propertyName, int value)
+        {
+            var so   = new SerializedObject(owner);
+            var prop = so.FindProperty(propertyName);
+            if (prop == null)
+            {
+                Debug.LogWarning($"[ArmDetection] Property '{propertyName}' not found on {owner.GetType().Name}");
+                return;
+            }
+            prop.intValue = value;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void WireFloat(Object owner, string propertyName, float value)
+        {
+            var so   = new SerializedObject(owner);
+            var prop = so.FindProperty(propertyName);
+            if (prop == null)
+            {
+                Debug.LogWarning($"[ArmDetection] Property '{propertyName}' not found on {owner.GetType().Name}");
+                return;
+            }
+            prop.floatValue = value;
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 

@@ -59,6 +59,17 @@ namespace ARArmDetection
         private FieldInfo    _intrPrincipalPoint;   // CameraIntrinsics.PrincipalPoint
         private FieldInfo    _intrSensorResolution; // CameraIntrinsics.SensorResolution
 
+        // Compiled-delegate fast paths for the members hit every frame. MethodInfo.Invoke
+        // allocates (boxing + args array) on every call; a bound delegate does not. Falls
+        // back to reflection when a signature doesn't match this SDK version.
+        private Func<Texture>    _pcaGetTextureFast;
+        private Func<bool>       _pcaIsPlayingFast;
+        private Func<Vector2Int> _pcaCurrentResolutionFast;
+        private Func<Pose>       _pcaGetCameraPoseFast;
+        // Intrinsics are constant after Play() (sensor-space values), so they are read via
+        // reflection only until the first successful read, then served from cache.
+        private bool _intrinsicsCached;
+
         // Reflection handles for the legacy WebCamTextureManager-style API.
         private PropertyInfo _legacyTexProperty;
         private MethodInfo   _legacyTexMethodCam;
@@ -187,7 +198,14 @@ namespace ARArmDetection
             if (_webCamTextureManager == null) TryFindManager();
             if (_webCamTextureManager != null && _sourceKind == SourceKind.PassthroughCameraAccess)
             {
-                if (TryRefreshFromPassthroughCameraAccess()) return;
+                if (TryRefreshFromPassthroughCameraAccess())
+                {
+                    // If the direct-WebCam fallback started before PCA came up, it is now a
+                    // SECOND live camera stream decoding frames nobody reads — a permanent
+                    // CPU/memory drain that contributes to heat and crashes. Kill it.
+                    StopDirectFallback();
+                    return;
+                }
                 // Fall through if PCA returned no texture (e.g. permission not yet granted).
             }
 
@@ -200,6 +218,7 @@ namespace ARArmDetection
                     _currentTexture = t;
                     _imageWidth = t.width;
                     _imageHeight = t.height;
+                    StopDirectFallback();
                     return;
                 }
             }
@@ -218,21 +237,39 @@ namespace ARArmDetection
         {
             try
             {
-                if (_pcaIsPlaying != null)
+                if (_pcaIsPlayingFast != null)
+                {
+                    if (!_pcaIsPlayingFast()) return false;
+                }
+                else if (_pcaIsPlaying != null)
                 {
                     var playing = _pcaIsPlaying.GetValue(_webCamTextureManager);
                     if (playing is bool b && !b) return false;
                 }
-                if (_pcaGetTexture == null) return false;
-                var texObj = _pcaGetTexture.Invoke(_webCamTextureManager, null);
-                if (texObj is not Texture tex || tex == null) return false;
+
+                Texture tex;
+                if (_pcaGetTextureFast != null)
+                {
+                    tex = _pcaGetTextureFast();
+                }
+                else
+                {
+                    if (_pcaGetTexture == null) return false;
+                    tex = _pcaGetTexture.Invoke(_webCamTextureManager, null) as Texture;
+                }
+                if (tex == null) return false;
 
                 _currentTexture = tex;
 
                 // CurrentResolution is the active stream resolution (may differ from the texture's reported size).
-                if (_pcaCurrentResolution != null &&
-                    _pcaCurrentResolution.GetValue(_webCamTextureManager) is Vector2Int res &&
-                    res.x > 0 && res.y > 0)
+                Vector2Int res = default;
+                if (_pcaCurrentResolutionFast != null)
+                    res = _pcaCurrentResolutionFast();
+                else if (_pcaCurrentResolution != null &&
+                         _pcaCurrentResolution.GetValue(_webCamTextureManager) is Vector2Int r)
+                    res = r;
+
+                if (res.x > 0 && res.y > 0)
                 {
                     _imageWidth  = res.x;
                     _imageHeight = res.y;
@@ -243,8 +280,13 @@ namespace ARArmDetection
                     _imageHeight = tex.height;
                 }
 
-                // Intrinsics: focal length & principal point in sensor pixels (constant after Play()).
-                if (_pcaIntrinsics != null)
+                // Intrinsics: focal length & principal point in sensor pixels. Constant after
+                // Play(), so the boxing-heavy reflection reads run only until the first success.
+                if (_intrinsicsCached)
+                {
+                    _hasIntrinsics = true;
+                }
+                else if (_pcaIntrinsics != null)
                 {
                     var intr = _pcaIntrinsics.GetValue(_webCamTextureManager);
                     if (intr != null && _intrFocalLength != null && _intrPrincipalPoint != null)
@@ -255,11 +297,18 @@ namespace ARArmDetection
                             _sensorResolution = (Vector2Int)_intrSensorResolution.GetValue(intr);
                         _hasIntrinsics = _focalLengthPx.x > 0f && _focalLengthPx.y > 0f
                                       && _sensorResolution.x > 0 && _sensorResolution.y > 0;
+                        _intrinsicsCached = _hasIntrinsics;
                     }
                 }
 
                 // Timestamp-aware camera pose (the pose at the moment the image was captured).
-                if (_pcaGetCameraPose != null)
+                if (_pcaGetCameraPoseFast != null)
+                {
+                    var p = _pcaGetCameraPoseFast();
+                    _cachedPose = p;
+                    _cachedPoseValid = p.rotation != default;
+                }
+                else if (_pcaGetCameraPose != null)
                 {
                     var poseObj = _pcaGetCameraPose.Invoke(_webCamTextureManager, null);
                     if (poseObj is Pose p)
@@ -340,9 +389,23 @@ namespace ARArmDetection
 
         // ── Direct WebCamTexture fallback ──────────────────────────────────────────────
 
+        /// <summary>Stops and destroys the direct-WebCam fallback stream once a better
+        /// source is delivering frames, so two camera pipelines never run at once.</summary>
+        private void StopDirectFallback()
+        {
+            if (_directCam == null) return;
+            if (_directCam.isPlaying) _directCam.Stop();
+            Destroy(_directCam);
+            _directCam = null;
+            Debug.Log("[PassthroughCameraSource] Primary camera active — direct WebCam fallback stopped.");
+        }
+
         private IEnumerator TryDirectWebCamAfterDelay()
         {
-            yield return new WaitForSeconds(1f);
+            // 5 s (was 1 s): PCA regularly needs a few seconds for permission + stream
+            // start-up, and starting the fallback too eagerly meant a second live camera
+            // stream ran alongside PCA for the whole session.
+            yield return new WaitForSeconds(5f);
             if (HasFrame) yield break;
 
             var devices = WebCamTexture.devices;
@@ -386,6 +449,14 @@ namespace ARArmDetection
                 _pcaIntrinsics        = type.GetProperty("Intrinsics");
                 _pcaGetCameraPose     = type.GetMethod("GetCameraPose", Type.EmptyTypes);
 
+                // Bind allocation-free delegates for the per-frame members; any that don't
+                // match this SDK version's signature stay null and use reflection instead.
+                _pcaGetTextureFast        = TryBindDelegate<Func<Texture>>(_pcaGetTexture);
+                _pcaIsPlayingFast         = TryBindDelegate<Func<bool>>(_pcaIsPlaying?.GetGetMethod());
+                _pcaCurrentResolutionFast = TryBindDelegate<Func<Vector2Int>>(_pcaCurrentResolution?.GetGetMethod());
+                _pcaGetCameraPoseFast     = TryBindDelegate<Func<Pose>>(_pcaGetCameraPose);
+                _intrinsicsCached         = false;
+
                 if (_pcaIntrinsics != null)
                 {
                     var intrType = _pcaIntrinsics.PropertyType;
@@ -414,6 +485,12 @@ namespace ARArmDetection
                 Debug.Log($"[PassthroughCameraSource] Legacy: property '{_legacyTexProperty.Name}' on {type.Name}");
             else
                 Debug.LogError($"[PassthroughCameraSource] No texture accessor on {type.FullName}");
+        }
+
+        private TDelegate TryBindDelegate<TDelegate>(MethodInfo method) where TDelegate : class
+        {
+            if (method == null || _webCamTextureManager == null) return null;
+            return Delegate.CreateDelegate(typeof(TDelegate), _webCamTextureManager, method, false) as TDelegate;
         }
 
         private Texture ResolveViaLegacyManagerReflection()

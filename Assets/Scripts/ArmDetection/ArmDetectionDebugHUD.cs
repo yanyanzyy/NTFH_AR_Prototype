@@ -13,6 +13,8 @@ namespace ARArmDetection
         [SerializeField] private PassthroughCameraSource _cameraSource;
         [SerializeField] private MediaPipeHandArmDetector _mediaPipeDetector;
         [SerializeField] private ArmDetectionManager     _manager;
+        [SerializeField] private NeedleAngleEstimator    _angleEstimator;
+        [SerializeField] private InjectionSequenceEvaluator _injectionEvaluator;
         [SerializeField] private float                   _distanceMeters = 1.5f;
 
         private Canvas    _canvas;
@@ -20,6 +22,21 @@ namespace ARArmDetection
         private int       _detectionCount;
         private int       _frameCount;
         private float     _lastRunTime;
+        private float     _nextTextRefresh;
+
+        // Live process memory, read from /proc/self/status (works in release builds,
+        // unlike the Profiler API). RSS+swap is the same number the Android
+        // low-memory killer acts on, so if THIS climbs, the app is heading for a kill.
+        private float _nextMemSample;
+        private long  _rssKb;
+        private long  _swapKb;
+        private long  _prevTotalKb;
+        private float _prevMemTime;
+        private float _memRateMBs;
+
+        // Rebuilding the rich-text block every frame allocates a large string AND forces a
+        // Canvas mesh rebuild each frame; 4 Hz is plenty for a diagnostic readout.
+        private const float TextRefreshInterval = 0.25f;
 
         // Called by ArmDetectionManager each frame it runs inference.
         public void ReportDetections(int personCount, int armCount)
@@ -34,6 +51,39 @@ namespace ARArmDetection
             BuildHUD();
         }
 
+        private void SampleMemory()
+        {
+            if (Time.unscaledTime < _nextMemSample) return;
+            _nextMemSample = Time.unscaledTime + 1f;
+
+            try
+            {
+                foreach (var line in System.IO.File.ReadLines("/proc/self/status"))
+                {
+                    if (line.StartsWith("VmRSS:")) _rssKb = ParseKbLine(line);
+                    else if (line.StartsWith("VmSwap:")) { _swapKb = ParseKbLine(line); break; }
+                }
+            }
+            catch { /* not available on this platform (e.g. Editor on Windows) */ }
+
+            long totalKb = _rssKb + _swapKb;
+            if (_prevMemTime > 0f && Time.unscaledTime > _prevMemTime)
+                _memRateMBs = (totalKb - _prevTotalKb) / 1024f / (Time.unscaledTime - _prevMemTime);
+            _prevTotalKb = totalKb;
+            _prevMemTime = Time.unscaledTime;
+        }
+
+        private static long ParseKbLine(string line)
+        {
+            long value = 0;
+            foreach (char c in line)
+            {
+                if (c >= '0' && c <= '9') value = value * 10 + (c - '0');
+                else if (value > 0) break;
+            }
+            return value;
+        }
+
         private void Update()
         {
             if (_label == null) return;
@@ -45,6 +95,11 @@ namespace ARArmDetection
                 transform.position = cam.transform.position + cam.transform.forward * _distanceMeters;
                 transform.rotation = cam.transform.rotation;
             }
+
+            SampleMemory();
+
+            if (Time.unscaledTime < _nextTextRefresh) return;
+            _nextTextRefresh = Time.unscaledTime + TextRefreshInterval;
 
             bool hasFrame   = _cameraSource != null && _cameraSource.HasFrame;
             bool mediaPipeReady = _mediaPipeDetector != null && _mediaPipeDetector.IsReady;
@@ -78,10 +133,39 @@ namespace ARArmDetection
                 $"Persons   : {personCount} detected\n" +
                 $"Arm status: {armStatus}\n" +
                 $"Arm found : {(foundArm ? "<color=lime>YES</color>" : "no")}\n" +
+                $"Lock      : {(_manager != null ? (_manager.IsLocked ? $"<color=lime>{_manager.LockStatus}</color>" : _manager.LockStatus) : "—")}\n" +
+                $"Needle    : {(_manager != null ? _manager.NeedleStatus : "—")}\n" +
+                $"Angle     : {NeedleAngleText()}\n" +
+                $"Inject    : {InjectionText()}\n" +
                 $"DepthAxis : {(_manager != null ? _manager.DepthAxisStatus : "—")}\n" +
                 $"MaxArmKP  : {(_manager != null ? _manager.LastMaxArmScore.ToString("F3") : "—")}  " +
                 $"<color=grey>(lower threshold if < threshold)</color>\n" +
+                $"Memory    : RSS+swap {(_rssKb + _swapKb) / 1048576f:F2} GB  " +
+                $"<color={(_memRateMBs > 0.5f ? "red" : "lime")}>Δ{_memRateMBs:+0.00;-0.00} MB/s</color>  " +
+                $"GC {System.GC.GetTotalMemory(false) / 1048576f:F0} MB\n" +
                 $"Time      : {Time.time:F1}s";
+        }
+
+        private string InjectionText()
+        {
+            if (_injectionEvaluator == null) return "— (no evaluator)";
+            string color = _injectionEvaluator.CurrentStage switch
+            {
+                InjectionSequenceEvaluator.Stage.Success => "lime",
+                InjectionSequenceEvaluator.Stage.Idle    => "grey",
+                _                                        => "orange",
+            };
+            return $"<color={color}>[{_injectionEvaluator.CurrentStage}]</color> {_injectionEvaluator.StatusText}";
+        }
+
+        private string NeedleAngleText()
+        {
+            if (_angleEstimator == null) return "— (no estimator)";
+            if (!_angleEstimator.HasAngle) return "no needle axis";
+            string verdict = _angleEstimator.IsAngleAcceptable
+                ? "<color=lime>ACCEPTABLE</color>"
+                : "<color=red>OUT OF RANGE</color>";
+            return $"{_angleEstimator.CurrentInsertionAngle:F1}° {verdict}";
         }
 
         private void BuildHUD()
