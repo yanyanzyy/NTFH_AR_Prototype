@@ -22,8 +22,14 @@ namespace ARArmDetection
         [SerializeField] private bool _fallbackToMediaPipe = true;
 
         [Header("Needle detection (vision)")]
-        [Tooltip("Runs the trained needle model (arm-needle-pose-320.onnx) alongside the arm model. " +
-                 "Optional: when unassigned, InjectionSiteDetector falls back to hand tracking.")]
+        [Tooltip("PREFERRED needle source: Group 2's SyringePose engine (CustomSyringeDetector, on the " +
+                 "SyringePosePrototype object). It self-runs its own inference; the manager only reads " +
+                 "its latest keypoints and lifts tip/hub into smoothed world space for the vein pipeline. " +
+                 "When assigned it takes priority over the legacy NeedleDetector below.")]
+        [SerializeField] private CustomSyringeDetector _syringeDetector;
+        [Tooltip("LEGACY needle source: the in-namespace NeedleDetector wrapper (arm-needle-pose model). " +
+                 "Used only when no CustomSyringeDetector is assigned. When both are unassigned, " +
+                 "InjectionSiteDetector falls back to hand tracking.")]
         [SerializeField] private NeedleDetector _needleDetector;
         [Tooltip("Only run the needle model once an arm is locked. The needle tip is only consumed " +
                  "during injection (which requires a locked arm), so this keeps the whole GPU budget " +
@@ -580,8 +586,20 @@ namespace ARArmDetection
         /// needle tip/hub for InjectionSiteDetector. The needle is a separate, second worker —
         /// the arm model stays untouched — so it only runs while an arm is locked by default.
         /// </summary>
+        // CustomSyringeDetector keypoint order (confirmed on-device 2026-07-14 on the real prop):
+        // kpt0 = needle tip, kpt3 = plunger/hub. The two define the needle axis.
+        private const int SyringeTipKeypoint = 0;
+        private const int SyringeHubKeypoint = 3;
+
         private void UpdateNeedleDetection()
         {
+            // Preferred path: Group 2's self-running CustomSyringeDetector.
+            if (_syringeDetector != null)
+            {
+                UpdateNeedleFromSyringeDetector();
+                return;
+            }
+
             if (_needleDetector == null || !_needleDetector.IsReady)
             {
                 NeedleStatus = _needleDetector == null ? "No needle detector" : _needleDetector.Status;
@@ -635,6 +653,97 @@ namespace ARArmDetection
             {
                 NeedleStatus = $"Searching ({_needleDetector.Status})";
             }
+        }
+
+        /// <summary>
+        /// Reads the self-running CustomSyringeDetector's latest keypoints and lifts the needle
+        /// tip/hub into smoothed world space. Mirrors the standalone SyringePose scene's placement:
+        /// both points are put at ONE fixed camera distance (the locked arm's distance, else a short
+        /// fallback) rather than depth-raycast, because a raycast through a thin handheld syringe
+        /// punches past it onto the arm/floor behind and skews the needle line.
+        /// The detector self-runs its own inference every frame, so <see cref="_runNeedleOnlyWhileLocked"/>
+        /// here only gates whether we CONSUME its output, not whether it runs.
+        /// </summary>
+        private void UpdateNeedleFromSyringeDetector()
+        {
+            if (!_syringeDetector.isActiveAndEnabled)
+            {
+                NeedleStatus = "Syringe detector disabled";
+                _hasNeedleWorld = false;
+                return;
+            }
+
+            if (_runNeedleOnlyWhileLocked && _lockState != LockState.Locked)
+            {
+                NeedleStatus = "Idle until arm locked";
+                _hasNeedleWorld = false;
+                return;
+            }
+
+            if (_syringeDetector.IsSyringeDetected)
+            {
+                // Fixed placement depth: the locked arm's distance (the needle only matters near it),
+                // else a short arm's-length fallback clamped to the sensible depth range.
+                float depth = _hasSmoothedArmWorld
+                    ? Vector3.Distance(_cameraSource.CameraPose.position,
+                                       (_smoothedShoulderWorld + _smoothedWristWorld) * 0.5f)
+                    : Mathf.Clamp(0.45f, _minDepthMeters, _maxDepthMeters);
+
+                Vector2 tipPixel = SyringeKeypointToImage(_syringeDetector.NormalizedKeypoints[SyringeTipKeypoint]);
+                Vector2 hubPixel = SyringeKeypointToImage(_syringeDetector.NormalizedKeypoints[SyringeHubKeypoint]);
+
+                Vector3 tipWorld = _cameraSource.ImagePointToWorld(tipPixel, depth);
+                Vector3 hubWorld = _cameraSource.ImagePointToWorld(hubPixel, depth);
+
+                if (!_hasNeedleWorld)
+                {
+                    _smoothedNeedleTipWorld = tipWorld;
+                    _smoothedNeedleHubWorld = hubWorld;
+                }
+                else
+                {
+                    float t = 1f - _needleWorldSmoothing;
+                    _smoothedNeedleTipWorld = Vector3.Lerp(_smoothedNeedleTipWorld, tipWorld, t);
+                    _smoothedNeedleHubWorld = Vector3.Lerp(_smoothedNeedleHubWorld, hubWorld, t);
+                }
+
+                _hasNeedleWorld = true;
+                _needleLastSeenTime = Time.time;
+                NeedleStatus = $"Syringe {_syringeDetector.HighestConfidence:F2} @ " +
+                               $"{Vector3.Distance(_cameraSource.CameraPose.position, _smoothedNeedleTipWorld):F2} m";
+            }
+            else if (_hasNeedleWorld && Time.time - _needleLastSeenTime > _needleLostAfterSeconds)
+            {
+                _hasNeedleWorld = false;
+                NeedleStatus = "Syringe lost";
+            }
+            else if (!_hasNeedleWorld)
+            {
+                NeedleStatus = $"Searching (syringe {_syringeDetector.HighestConfidence:F2})";
+            }
+        }
+
+        /// <summary>
+        /// Maps a CustomSyringeDetector keypoint (normalised 0..1 in its CENTER-CROPPED square input)
+        /// back to a pixel in the full camera image, inverting the aspect-preserving centre-crop the
+        /// detector applies before inference (Graphics.Blit with scale/offset in its Update). Without
+        /// this the tip drifts horizontally as it moves off image-centre. For landscape passthrough
+        /// (width > height) only the X axis is cropped, so the Y mapping matches the standalone
+        /// SyringeVisualizer exactly; the general form also handles a portrait source.
+        /// </summary>
+        private Vector2 SyringeKeypointToImage(Vector2 normalized)
+        {
+            float w = _cameraSource.Width  > 0 ? _cameraSource.Width  : 640f;
+            float h = _cameraSource.Height > 0 ? _cameraSource.Height : 640f;
+            float aspect = w / h;
+
+            float scaleX = 1f, offsetX = 0f, scaleY = 1f, offsetY = 0f;
+            if (aspect > 1f)      { scaleX = 1f / aspect; offsetX = (1f - scaleX) * 0.5f; }
+            else if (aspect < 1f) { scaleY = aspect;      offsetY = (1f - scaleY) * 0.5f; }
+
+            float srcU = offsetX + normalized.x * scaleX;
+            float srcV = offsetY + normalized.y * scaleY;
+            return new Vector2(srcU * w, srcV * h);
         }
 
         public float GetEstimatedDepth(PersonDetection p) => EstimateDepth(p);

@@ -2167,6 +2167,13 @@ MonoBehaviour:
   - {fileID: 1985811706}
   - {fileID: 426222574}
   _occluderRadius: 0.055
+  _occludedHandBones: 00000000140000000600000015000000
+  _occludeNeedle: 1
+  _armManager: {fileID: 2062675444}
+  _needleOccluderCount: 6
+  _needleOccluderRadius: 0.03
+  _needleCameraBiasMeters: 0.04
+  _overlay: {fileID: 1511012891}
 --- !u!224 &1229135957 stripped
 RectTransform:
   m_CorrespondingSourceObject: {fileID: 3259285889726014650, guid: 5713b959e3c77a58fb258133fc8e4aef, type: 3}
@@ -2715,7 +2722,7 @@ MonoBehaviour:
   _confidenceThreshold: 0.05
   _inferenceInterval: 0.05
   logDebugInfo: 1
-  cameraSourceComponent: {fileID: 0}
+  cameraSourceComponent: {fileID: 899930729}
 --- !u!1 &1511012890
 GameObject:
   m_ObjectHideFlags: 0
@@ -2755,6 +2762,7 @@ MonoBehaviour:
   _thicknessRatio: 0.22
   _minThickness: 0.05
   _maxThickness: 0.18
+  _hideModelUntilRevealed: 0
   _forceVisible: 0
   _showDebugQuadAlongsideModel: 0
 --- !u!4 &1511012892
@@ -2972,6 +2980,11 @@ MonoBehaviour:
   _veinMap: {fileID: 1668819008}
   _feedbackUI: {fileID: 1668819005}
   _armManager: {fileID: 2062675444}
+  _angleEstimator: {fileID: 1416556385}
+  _armOverlay: {fileID: 1511012891}
+  _wrongPokesToReveal: 3
+  _overlayRevealSeconds: 5
+  _contactLossGraceSeconds: 0.3
 --- !u!114 &1668819007
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2991,6 +3004,7 @@ MonoBehaviour:
   _armRadiusMeters: 0.0425
   _approachRadiusMeters: 0.07
   _dwellSeconds: 0.25
+  _contactRadiusMeters: 0.03
 --- !u!114 &1668819008
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -3046,7 +3060,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.InjectionSequenceEvaluator
   _armManager: {fileID: 2062675444}
   _veinMap: {fileID: 1668819008}
-  _angleEstimator: {fileID: 0}
+  _angleEstimator: {fileID: 1416556385}
   _armRadiusMeters: 0.0425
   _contactDistanceMeters: 0.015
   _contactDwellSeconds: 0.15
@@ -3067,6 +3081,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.VeinPathVisualizer
   _veinMap: {fileID: 1668819008}
   _lineWidthMeters: 0.004
+  _revealGate: {fileID: 1511012891}
 --- !u!1 &1823723402
 GameObject:
   m_ObjectHideFlags: 0
@@ -3468,6 +3483,7 @@ MonoBehaviour:
   _overlay: {fileID: 1511012891}
   _useCustomArmDetector: 1
   _fallbackToMediaPipe: 0
+  _syringeDetector: {fileID: 1466963603}
   _needleDetector: {fileID: 0}
   _runNeedleOnlyWhileLocked: 0
   _needleWorldSmoothing: 0.5

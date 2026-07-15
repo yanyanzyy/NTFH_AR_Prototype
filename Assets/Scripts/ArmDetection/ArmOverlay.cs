@@ -63,6 +63,15 @@ namespace ARArmDetection
         [SerializeField] private float _minThickness   = 0.05f;
         [SerializeField] private float _maxThickness   = 0.18f;
 
+        // ── Answer-key reveal ──────────────────────────────────────────────────────────
+        [Header("Answer-key reveal")]
+        [Tooltip("Hide the overlay's mesh while the trainee is poking — it acts as an \"answer key\" " +
+                 "that only flashes up on request (e.g. after repeated wrong pokes). The model is " +
+                 "still POSITIONED every frame so the vein paths under it stay aligned; only its " +
+                 "renderers are switched off. Turn this OFF to keep the overlay permanently visible " +
+                 "(handy while checking alignment).")]
+        [SerializeField] private bool _hideModelUntilRevealed = true;
+
         [Header("Debug")]
         [Tooltip("Force the overlay visible even when the projected arm length is tiny (< 0.05 m). " +
                  "Useful in Editor where fallback projection may produce short arms. " +
@@ -75,8 +84,23 @@ namespace ARArmDetection
         /// before Awake). VeinMap reads prefab-authored vein paths from under this.</summary>
         public Transform ModelRoot => _model;
 
+        /// <summary>True when the overlay mesh should currently be drawn: either it's never hidden,
+        /// or a <see cref="RevealFor"/> window is still open. WearerArmOccluder reads this so the
+        /// depth occluders only run while there is actually an overlay to sit in front of.</summary>
+        public bool IsModelRevealed => !_hideModelUntilRevealed || Time.time < _revealUntilTime;
+
+        /// <summary>Flash the overlay mesh on for <paramref name="seconds"/> (e.g. to show the
+        /// correct vein sites after repeated wrong pokes). Extends any window already open.</summary>
+        public void RevealFor(float seconds)
+        {
+            _revealUntilTime = Mathf.Max(_revealUntilTime, Time.time + Mathf.Max(0f, seconds));
+        }
+
         // ── Private state ──────────────────────────────────────────────────────────────
         private Transform _model;
+        private Renderer[] _modelRenderers;
+        private bool      _modelRenderersEnabled = true;
+        private float     _revealUntilTime = -1f;
         private Transform _quad;
         private Material  _quadMaterial;
         private float     _nextShortArmWarning;
@@ -92,6 +116,9 @@ namespace ARArmDetection
                 modelGo.name = "ArmModelOverlay";
                 modelGo.SetActive(false);
                 _model = modelGo.transform;
+                // Cached so the mesh can be hidden (answer-key mode) without deactivating the
+                // GameObject — the transforms must keep updating so VeinMap's paths stay aligned.
+                _modelRenderers = modelGo.GetComponentsInChildren<Renderer>(true);
             }
 
             // Debug quad (always created; hidden unless needed)
@@ -210,7 +237,17 @@ namespace ARArmDetection
 
             _model.SetPositionAndRotation(pos, rot);
             _model.localScale = scale;
-            _model.gameObject.SetActive(true);
+            _model.gameObject.SetActive(true);   // active so transforms (and vein paths) update...
+            ApplyModelRenderers(IsModelRevealed); // ...but the mesh only draws while revealed.
+        }
+
+        /// <summary>Enables/disables the cached model renderers, only touching them on a change.</summary>
+        private void ApplyModelRenderers(bool visible)
+        {
+            if (_modelRenderers == null || _modelRenderersEnabled == visible) return;
+            _modelRenderersEnabled = visible;
+            foreach (var r in _modelRenderers)
+                if (r != null) r.enabled = visible;
         }
 
         private void PlaceQuad(Vector3 shoulder, Vector3 wrist, Vector3 armDir, float length,

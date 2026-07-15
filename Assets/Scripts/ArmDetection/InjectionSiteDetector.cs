@@ -40,6 +40,12 @@ namespace ARArmDetection
         [Tooltip("Seconds the fingertip must remain within approach radius before events fire")]
         [SerializeField] private float _dwellSeconds = 0.25f;
 
+        [Tooltip("Needle tip within this distance (m) of the arm surface counts as an actual TOUCH " +
+                 "(vs. merely approaching). Drives IsContacting, which the feedback UI uses to only " +
+                 "show the correct/wrong-spot verdict once the arm is really poked. Kept a little " +
+                 "loose because the vision needle tip is depth-projected and slightly noisy.")]
+        [SerializeField] private float _contactRadiusMeters = 0.03f;
+
         // ── Events ────────────────────────────────────────────────────────────────────
 
         /// <summary>Fired once when dwell threshold is first reached. Payload = surface projection of fingertip.</summary>
@@ -56,6 +62,18 @@ namespace ARArmDetection
         public bool    IsInjecting    { get; private set; }
         public Vector3 InjectionPoint { get; private set; }
 
+        /// <summary>True when the needle tip is within <c>_contactRadiusMeters</c> of the arm
+        /// surface — i.e. the arm is actually being touched/poked, not merely approached.</summary>
+        public bool    IsContacting          { get; private set; }
+
+        /// <summary>Signed distance (m) from the needle tip to the arm surface this frame
+        /// (negative = inside). Large positive when there is no valid tip/arm.</summary>
+        public float   SurfaceDistanceMeters { get; private set; } = float.MaxValue;
+
+        /// <summary>Needle tip projected onto the arm surface this frame — the candidate injection
+        /// point. Only meaningful while <see cref="IsContacting"/> (or within approach).</summary>
+        public Vector3 SurfacePoint          { get; private set; }
+
         // ── Private state ─────────────────────────────────────────────────────────────
 
         private Transform _indexTipBone;
@@ -65,13 +83,17 @@ namespace ARArmDetection
 
         private void Update()
         {
-            if (_armManager == null || !_armManager.IsLocked) { EndInjection(); return; }
-            if (!_armManager.TryGetArmEndpoints(out var shoulder, out var wrist)) { EndInjection(); return; }
+            if (_armManager == null || !_armManager.IsLocked) { ClearContact(); EndInjection(); return; }
+            if (!_armManager.TryGetArmEndpoints(out var shoulder, out var wrist)) { ClearContact(); EndInjection(); return; }
 
-            if (!TryGetNeedleTip(out Vector3 needleTip)) { EndInjection(); return; }
+            if (!TryGetNeedleTip(out Vector3 needleTip)) { ClearContact(); EndInjection(); return; }
 
             float distToSurface = DistanceToArmSurface(needleTip, shoulder, wrist,
                                                         _armRadiusMeters, out Vector3 surfacePoint);
+
+            SurfaceDistanceMeters = distToSurface;
+            SurfacePoint          = surfacePoint;
+            IsContacting          = distToSurface <= _contactRadiusMeters;
 
             if (distToSurface <= _approachRadiusMeters)
             {
@@ -159,6 +181,12 @@ namespace ARArmDetection
             surfacePoint = axisPoint + radialDir * armRadius;
 
             return radialDist - armRadius;
+        }
+
+        private void ClearContact()
+        {
+            IsContacting          = false;
+            SurfaceDistanceMeters = float.MaxValue;
         }
 
         private void EndInjection()

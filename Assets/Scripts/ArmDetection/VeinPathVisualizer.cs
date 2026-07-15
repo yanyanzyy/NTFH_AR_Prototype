@@ -21,6 +21,11 @@ namespace ARArmDetection
         [Tooltip("Line width in metres (~4 mm reads well at arm's length).")]
         [SerializeField] private float _lineWidthMeters = 0.004f;
 
+        [Tooltip("Optional — when set, the vein lines only draw while this overlay's mesh is shown " +
+                 "(ArmOverlay.IsModelRevealed), so they stay part of the hidden 'answer key' during " +
+                 "poking and only flash up with it. Leave empty to always draw (debug behaviour).")]
+        [SerializeField] private ArmOverlay _revealGate;
+
         private readonly List<LineRenderer> _lines = new();
         private readonly List<Vector3> _points = new();
         private readonly Dictionary<int, int> _loggedCounts = new();
@@ -28,6 +33,14 @@ namespace ARArmDetection
         private void Update()
         {
             if (_veinMap == null) return;
+
+            // Keep the vein lines hidden while the answer-key overlay is hidden.
+            if (_revealGate != null && !_revealGate.IsModelRevealed)
+            {
+                for (int i = 0; i < _lines.Count; i++)
+                    if (_lines[i] != null) _lines[i].enabled = false;
+                return;
+            }
 
             var veins = _veinMap.Veins;
             while (_lines.Count < veins.Count) _lines.Add(CreateLine(_lines.Count));

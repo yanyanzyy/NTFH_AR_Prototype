@@ -9,7 +9,7 @@ namespace ARArmDetection
     ///
     ///   1. CONTACT — tip within _contactDistanceMeters of the arm-cylinder surface
     ///   2. SPOT    — the surface contact point lies on a VeinMap vein zone
-    ///   3. ANGLE   — insertion angle within NeedleAngleEstimator's acceptable band
+    ///   3. ANGLE   — insertion angle within SyringeAngleEstimator's acceptable band
     ///   4. DEPTH   — tip penetrated below the surface within the accepted range
     ///   => SUCCESS (latched until the needle leaves the arm)
     ///
@@ -32,7 +32,9 @@ namespace ARArmDetection
         [Header("References")]
         [SerializeField] private ArmDetectionManager _armManager;
         [SerializeField] private VeinMap _veinMap;
-        [SerializeField] private NeedleAngleEstimator _angleEstimator;
+        [Tooltip("Group 2's SyringeAngleEstimator (under SyringePosePrototype / SyringeLabelContainer). " +
+                 "Supplies the insertion-angle stage.")]
+        [SerializeField] private SyringeAngleEstimator _angleEstimator;
 
         [Header("Arm model")]
         [Tooltip("Physical radius of the mannequin arm at injection sites (forearm ~4.25 cm). " +

@@ -14,6 +14,13 @@ public class SyringeAngleEstimator : MonoBehaviour
     public float CurrentInsertionAngle { get; private set; }
     public bool IsAngleAcceptable { get; private set; }
 
+    /// <summary>True while the 4 keypoint spheres are assigned so an angle can be measured.
+    /// Mirrors ARArmDetection.NeedleAngleEstimator so either estimator can drive the same
+    /// feedback UI (VeinFeedbackController).</summary>
+    public bool HasAngle { get; private set; }
+    public float MinAcceptableAngle => minAcceptableAngle;
+    public float MaxAcceptableAngle => maxAcceptableAngle;
+
     [Header("Debug")]
     [Tooltip("Logs raw sphere positions + the computed direction vector/angle to Logcat every " +
              "~1 second - grab an adb logcat capture and look for '[AngleDebug]' lines to see " +
@@ -29,6 +36,7 @@ void Update()
         {
             CurrentInsertionAngle = 0f;
             IsAngleAcceptable = false;
+            HasAngle = false;
             return;
         }
 
@@ -51,6 +59,7 @@ void Update()
 
         // 3. Evaluate Acceptability Rules
         IsAngleAcceptable = (CurrentInsertionAngle >= minAcceptableAngle && CurrentInsertionAngle <= maxAcceptableAngle);
+        HasAngle = true;
 
         if (logDebugInfo && Time.time - _lastDebugLogTime >= 1f)
         {

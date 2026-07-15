@@ -31,6 +31,15 @@ namespace ARArmDetection
             /// <summary>True = must move toward the lateral/right side of the arm.</summary>
             public bool    CrossArmRight;
             public float   TotalDistance;
+
+            // ── Insertion angle (only shown on a correct spot) ──────────────────────────
+            /// <summary>True when the needle axis is long enough to measure an angle.</summary>
+            public bool    HasAngle;
+            /// <summary>Insertion angle below horizontal (degrees).</summary>
+            public float   AngleDegrees;
+            public bool    AngleAcceptable;
+            public float   AngleMin;
+            public float   AngleMax;
         }
 
         // ── Inspector wiring (optional — auto-built if null) ──────────────────────────
@@ -100,12 +109,12 @@ namespace ARArmDetection
 
             if (data.IsOnVein)
             {
-                SetText(_statusText,      "<color=#00FF00>CORRECT</color>");
-                SetText(_instructionText, $"On {data.VeinName}\nGood insertion site.");
+                SetText(_statusText,      "<color=#00FF00>CORRECT SPOT</color>");
+                SetText(_instructionText, BuildCorrectText(data));
             }
             else
             {
-                SetText(_statusText,      "<color=#FF4444>ADJUST POSITION</color>");
+                SetText(_statusText,      "<color=#FF4444>WRONG SPOT POKED</color>");
                 SetText(_instructionText, BuildInstructionText(data));
             }
 
@@ -128,6 +137,29 @@ namespace ARArmDetection
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────────────
+
+        /// <summary>Correct-spot body: confirms the vein, then the angle check that follows it.</summary>
+        private string BuildCorrectText(FeedbackData d)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"On {d.VeinName}");
+
+            if (!d.HasAngle)
+            {
+                sb.AppendLine("Checking angle…");
+            }
+            else if (d.AngleAcceptable)
+            {
+                sb.AppendLine($"<color=#00FF00>Angle {d.AngleDegrees:F0}° — good</color>");
+            }
+            else
+            {
+                string hint = d.AngleDegrees < d.AngleMin ? "too shallow" : "too steep";
+                sb.AppendLine($"<color=#FFAA00>Angle {d.AngleDegrees:F0}° — {hint}</color>");
+                sb.AppendLine($"Need {d.AngleMin:F0}–{d.AngleMax:F0}°");
+            }
+            return sb.ToString();
+        }
 
         private string BuildInstructionText(FeedbackData d)
         {
