@@ -134,7 +134,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &155282095
 Transform:
   m_ObjectHideFlags: 0
@@ -673,7 +673,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &421273234
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2115,8 +2115,9 @@ MonoBehaviour:
   _cameraSource: {fileID: 899930729}
   _mediaPipeDetector: {fileID: 1277423723}
   _manager: {fileID: 2062675444}
-  _angleEstimator: {fileID: 0}
-  _injectionEvaluator: {fileID: 0}
+  _angleEstimator: {fileID: 1668819011}
+  _injectionEvaluator: {fileID: 1668819009}
+  _simulatedNeedle: {fileID: 1668819012}
   _distanceMeters: 1.5
 --- !u!1 &1142748093
 GameObject:
@@ -2167,11 +2168,12 @@ MonoBehaviour:
   - {fileID: 1985811706}
   - {fileID: 426222574}
   _occluderRadius: 0.055
-  _occludedHandBones: 00000000140000000600000015000000
+  _fingerRadiusMeters: 0.011
+  _palmRadiusMeters: 0.024
   _occludeNeedle: 1
   _armManager: {fileID: 2062675444}
-  _needleOccluderCount: 6
   _needleOccluderRadius: 0.03
+  _needleHubOverhangMeters: 0.05
   _needleCameraBiasMeters: 0.04
   _overlay: {fileID: 1511012891}
 --- !u!224 &1229135957 stripped
@@ -2722,7 +2724,7 @@ MonoBehaviour:
   _confidenceThreshold: 0.05
   _inferenceInterval: 0.05
   logDebugInfo: 1
-  cameraSourceComponent: {fileID: 899930729}
+  cameraSourceComponent: {fileID: 0}
 --- !u!1 &1511012890
 GameObject:
   m_ObjectHideFlags: 0
@@ -2754,7 +2756,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmOverlay
   _armModelPrefab: {fileID: 8823628010819527810, guid: f13ebf698b27c134ab32dd3454f773c7, type: 3}
   _modelArmAxis: {x: 75, y: -2, z: -275}
-  _naturalArmLengthMeters: 0.75
+  _naturalArmLengthMeters: 0.65
   _scaleToFitDetectedLength: 1
   _pivotOffset: 0.4
   _lateralOffset: 0
@@ -2923,6 +2925,8 @@ GameObject:
   - component: {fileID: 1668819005}
   - component: {fileID: 1668819009}
   - component: {fileID: 1668819010}
+  - component: {fileID: 1668819012}
+  - component: {fileID: 1668819011}
   m_Layer: 0
   m_Name: VeinSystem
   m_TagString: Untagged
@@ -2981,7 +2985,11 @@ MonoBehaviour:
   _feedbackUI: {fileID: 1668819005}
   _armManager: {fileID: 2062675444}
   _angleEstimator: {fileID: 1416556385}
+  _needleAngleEstimator: {fileID: 1668819011}
   _armOverlay: {fileID: 1511012891}
+  _useDirectVeinProximity: 1
+  _showWithinMeters: 0.1
+  _pokeWithinMeters: 0.045
   _wrongPokesToReveal: 3
   _overlayRevealSeconds: 5
   _contactLossGraceSeconds: 0.3
@@ -3002,7 +3010,7 @@ MonoBehaviour:
   _useHandFallback: 1
   _rightHandSkeleton: {fileID: 426222574}
   _armRadiusMeters: 0.0425
-  _approachRadiusMeters: 0.07
+  _approachRadiusMeters: 0.09
   _dwellSeconds: 0.25
   _contactRadiusMeters: 0.03
 --- !u!114 &1668819008
@@ -3061,6 +3069,10 @@ MonoBehaviour:
   _armManager: {fileID: 2062675444}
   _veinMap: {fileID: 1668819008}
   _angleEstimator: {fileID: 1416556385}
+  _needleAngleEstimator: {fileID: 1668819011}
+  _useDirectVeinProximity: 1
+  _directContactMeters: 0.06
+  _requireAngleInDirectMode: 0
   _armRadiusMeters: 0.0425
   _contactDistanceMeters: 0.015
   _contactDwellSeconds: 0.15
@@ -3082,6 +3094,93 @@ MonoBehaviour:
   _veinMap: {fileID: 1668819008}
   _lineWidthMeters: 0.004
   _revealGate: {fileID: 1511012891}
+--- !u!114 &1668819011
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1668819003}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 74db7cca4e4451245824a763ad92b018, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.NeedleAngleEstimator
+  _armManager: {fileID: 2062675444}
+  _minAcceptableAngle: 15
+  _maxAcceptableAngle: 30
+--- !u!114 &1668819012
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1668819003}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ce6cc42385d91b64b997f140e04e7158, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.SimulatedNeedleProvider
+  _manager: {fileID: 2062675444}
+  _handSkeleton: {fileID: 426222574}
+  _finger: 0
+  _penTipOffsetMeters: 0
+  _hubBackDistanceMeters: 0.1
+  _drawMarkerLine: 1
+  _markerColor: {r: 0, g: 1, b: 0.6, a: 0.9}
+  _markerWidthMeters: 0.003
+--- !u!1 &1754711822
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1754711824}
+  - component: {fileID: 1754711823}
+  m_Layer: 0
+  m_Name: VeinTrainerHUD
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1754711823
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1754711822}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f49759c2ccedd514aa6607004b193d06, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.VeinTrainerHUD
+  _manager: {fileID: 2062675444}
+  _evaluator: {fileID: 1668819009}
+  _simulatedNeedle: {fileID: 1668819012}
+  _angleEstimator: {fileID: 1668819011}
+  _distanceMeters: 1.05
+  _heightOffsetMeters: -0.28
+  _rightOffsetMeters: 0.34
+  _followSmoothing: 0.5
+--- !u!4 &1754711824
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1754711822}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1823723402
 GameObject:
   m_ObjectHideFlags: 0
@@ -3488,6 +3587,7 @@ MonoBehaviour:
   _runNeedleOnlyWhileLocked: 0
   _needleWorldSmoothing: 0.5
   _needleLostAfterSeconds: 0.75
+  _simulatedNeedleOverridesVision: 1
   _manageMediaPipeLifecycle: 1
   _mediaPipeActivateAfterSeconds: 2
   _mediaPipePauseAfterSeconds: 2
@@ -3711,3 +3811,4 @@ SceneRoots:
   - {fileID: 805078188}
   - {fileID: 2062675445}
   - {fileID: 155282095}
+  - {fileID: 1754711824}

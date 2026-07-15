@@ -40,6 +40,14 @@ namespace ARArmDetection
         [Tooltip("Seconds without a fresh needle detection before TryGetNeedleTip reports lost. " +
                  "Bridges the gap between completed inferences (the model only finishes every few frames).")]
         [SerializeField] private float _needleLostAfterSeconds = 0.75f;
+
+        [Header("Simulated needle (finger / pen test rig)")]
+        [Tooltip("While a SimulatedNeedleProvider is actively feeding SetSimulatedNeedle (e.g. the " +
+                 "trainee's fingertip standing in for the syringe), it OVERRIDES the vision needle. " +
+                 "The syringe model currently produces unreliable detections, so a live simulated " +
+                 "source must win or spurious vision hits would keep stealing the needle. Turn this " +
+                 "off to restore vision-first priority (sim then only fills vision dropouts).")]
+        [SerializeField] private bool _simulatedNeedleOverridesVision = true;
         [Header("MediaPipe pipeline lifecycle")]
         [Tooltip("Manage the heavyweight MediaPipe HandLandmarkerRunner automatically. The runner " +
                  "opens its own camera stream, does a full-frame GPU readback every frame and runs " +
@@ -259,6 +267,32 @@ namespace ARArmDetection
             return _hasNeedleWorld;
         }
 
+        /// <summary>True while the needle currently served by TryGetNeedle/TryGetNeedleTip is the
+        /// SIMULATED one (fingertip / pen rig) rather than a vision detection. For HUDs.</summary>
+        public bool NeedleIsSimulated { get; private set; }
+
+        /// <summary>
+        /// Feeds a simulated needle pose (world space) for one frame — call every frame while the
+        /// simulation is active (SimulatedNeedleProvider does this from the tracked fingertip).
+        /// The pose flows through the exact same smoothing + TryGetNeedle API as the vision
+        /// needle, so InjectionSiteDetector, VeinFeedbackController, InjectionSequenceEvaluator
+        /// and NeedleAngleEstimator all work unchanged. Poses stop being served ~0.3 s after the
+        /// last call, so a provider that loses hand tracking degrades to "needle lost" naturally.
+        /// </summary>
+        public void SetSimulatedNeedle(Vector3 tipWorld, Vector3 hubWorld)
+        {
+            _simulatedTipWorld = tipWorld;
+            _simulatedHubWorld = hubWorld;
+            _simulatedSetTime = Time.time;
+            _hasSimulatedNeedle = true;
+        }
+
+        /// <summary>Stops serving the simulated needle immediately (e.g. provider disabled).</summary>
+        public void ClearSimulatedNeedle()
+        {
+            _hasSimulatedNeedle = false;
+        }
+
         private struct ArmCandidate
         {
             public Vector3 Shoulder;
@@ -301,6 +335,15 @@ namespace ARArmDetection
         private Vector3 _smoothedNeedleTipWorld;
         private Vector3 _smoothedNeedleHubWorld;
         private float _needleLastSeenTime;
+
+        // Simulated needle (SimulatedNeedleProvider pushes a fingertip/pen pose every frame;
+        // a pose older than SimulatedNeedleFreshSeconds means the provider stopped feeding —
+        // hand tracking lost or the component disabled — and the sim source goes stale).
+        private bool _hasSimulatedNeedle;
+        private Vector3 _simulatedTipWorld;
+        private Vector3 _simulatedHubWorld;
+        private float _simulatedSetTime;
+        private const float SimulatedNeedleFreshSeconds = 0.3f;
         // Scratch buffers + per-frame result cache for TryEstimateArmAxisFromDepth, so the
         // grid raycasts are never repeated for the same box within a frame and the hot path
         // allocates nothing.
@@ -593,25 +636,75 @@ namespace ARArmDetection
 
         private void UpdateNeedleDetection()
         {
-            // Preferred path: Group 2's self-running CustomSyringeDetector.
-            if (_syringeDetector != null)
+            bool simFresh = _hasSimulatedNeedle &&
+                            Time.time - _simulatedSetTime <= SimulatedNeedleFreshSeconds;
+
+            // A live simulated source (finger/pen rig) wins outright by default — the syringe
+            // vision model is unreliable and its spurious hits must not steal the needle
+            // mid-test. With override off, sim only fills in while vision has nothing.
+            if (simFresh && _simulatedNeedleOverridesVision)
             {
-                UpdateNeedleFromSyringeDetector();
+                ApplySimulatedNeedle();
                 return;
             }
 
+            bool visionTracking = _syringeDetector != null
+                ? UpdateNeedleFromSyringeDetector()
+                : UpdateNeedleFromLegacyDetector();
+
+            if (visionTracking)
+            {
+                NeedleIsSimulated = false;
+            }
+            else if (simFresh)
+            {
+                ApplySimulatedNeedle();
+            }
+        }
+
+        /// <summary>Shared smoothing sink for every needle source (vision or simulated).</summary>
+        private void ApplyNeedleWorld(Vector3 tipWorld, Vector3 hubWorld)
+        {
+            if (!_hasNeedleWorld)
+            {
+                _smoothedNeedleTipWorld = tipWorld;
+                _smoothedNeedleHubWorld = hubWorld;
+            }
+            else
+            {
+                float t = 1f - _needleWorldSmoothing;
+                _smoothedNeedleTipWorld = Vector3.Lerp(_smoothedNeedleTipWorld, tipWorld, t);
+                _smoothedNeedleHubWorld = Vector3.Lerp(_smoothedNeedleHubWorld, hubWorld, t);
+            }
+
+            _hasNeedleWorld = true;
+            _needleLastSeenTime = Time.time;
+        }
+
+        private void ApplySimulatedNeedle()
+        {
+            ApplyNeedleWorld(_simulatedTipWorld, _simulatedHubWorld);
+            NeedleIsSimulated = true;
+            NeedleStatus = "Simulated needle @ " +
+                           $"{Vector3.Distance(_cameraSource.CameraPose.position, _smoothedNeedleTipWorld):F2} m";
+        }
+
+        /// <summary>Legacy in-namespace NeedleDetector path. Returns true while it is serving
+        /// a needle pose (fresh or within the lost-grace window).</summary>
+        private bool UpdateNeedleFromLegacyDetector()
+        {
             if (_needleDetector == null || !_needleDetector.IsReady)
             {
                 NeedleStatus = _needleDetector == null ? "No needle detector" : _needleDetector.Status;
                 _hasNeedleWorld = false;
-                return;
+                return false;
             }
 
             if (_runNeedleOnlyWhileLocked && _lockState != LockState.Locked)
             {
                 NeedleStatus = "Idle until arm locked";
                 _hasNeedleWorld = false;
-                return;
+                return false;
             }
 
             _needleDetector.Run(_cameraSource.CurrentTexture);
@@ -628,20 +721,7 @@ namespace ARArmDetection
                 Vector3 tipWorld = ProjectImagePoint(needle.TipImage, fallbackDepth, out _);
                 Vector3 hubWorld = ProjectImagePoint(needle.HubImage, fallbackDepth, out _);
 
-                if (!_hasNeedleWorld)
-                {
-                    _smoothedNeedleTipWorld = tipWorld;
-                    _smoothedNeedleHubWorld = hubWorld;
-                }
-                else
-                {
-                    float t = 1f - _needleWorldSmoothing;
-                    _smoothedNeedleTipWorld = Vector3.Lerp(_smoothedNeedleTipWorld, tipWorld, t);
-                    _smoothedNeedleHubWorld = Vector3.Lerp(_smoothedNeedleHubWorld, hubWorld, t);
-                }
-
-                _hasNeedleWorld = true;
-                _needleLastSeenTime = Time.time;
+                ApplyNeedleWorld(tipWorld, hubWorld);
                 NeedleStatus = $"Needle {needle.Confidence:F2} @ {Vector3.Distance(_cameraSource.CameraPose.position, _smoothedNeedleTipWorld):F2} m";
             }
             else if (_hasNeedleWorld && Time.time - _needleLastSeenTime > _needleLostAfterSeconds)
@@ -653,6 +733,8 @@ namespace ARArmDetection
             {
                 NeedleStatus = $"Searching ({_needleDetector.Status})";
             }
+
+            return _hasNeedleWorld;
         }
 
         /// <summary>
@@ -664,20 +746,20 @@ namespace ARArmDetection
         /// The detector self-runs its own inference every frame, so <see cref="_runNeedleOnlyWhileLocked"/>
         /// here only gates whether we CONSUME its output, not whether it runs.
         /// </summary>
-        private void UpdateNeedleFromSyringeDetector()
+        private bool UpdateNeedleFromSyringeDetector()
         {
             if (!_syringeDetector.isActiveAndEnabled)
             {
                 NeedleStatus = "Syringe detector disabled";
                 _hasNeedleWorld = false;
-                return;
+                return false;
             }
 
             if (_runNeedleOnlyWhileLocked && _lockState != LockState.Locked)
             {
                 NeedleStatus = "Idle until arm locked";
                 _hasNeedleWorld = false;
-                return;
+                return false;
             }
 
             if (_syringeDetector.IsSyringeDetected)
@@ -695,20 +777,7 @@ namespace ARArmDetection
                 Vector3 tipWorld = _cameraSource.ImagePointToWorld(tipPixel, depth);
                 Vector3 hubWorld = _cameraSource.ImagePointToWorld(hubPixel, depth);
 
-                if (!_hasNeedleWorld)
-                {
-                    _smoothedNeedleTipWorld = tipWorld;
-                    _smoothedNeedleHubWorld = hubWorld;
-                }
-                else
-                {
-                    float t = 1f - _needleWorldSmoothing;
-                    _smoothedNeedleTipWorld = Vector3.Lerp(_smoothedNeedleTipWorld, tipWorld, t);
-                    _smoothedNeedleHubWorld = Vector3.Lerp(_smoothedNeedleHubWorld, hubWorld, t);
-                }
-
-                _hasNeedleWorld = true;
-                _needleLastSeenTime = Time.time;
+                ApplyNeedleWorld(tipWorld, hubWorld);
                 NeedleStatus = $"Syringe {_syringeDetector.HighestConfidence:F2} @ " +
                                $"{Vector3.Distance(_cameraSource.CameraPose.position, _smoothedNeedleTipWorld):F2} m";
             }
@@ -721,6 +790,8 @@ namespace ARArmDetection
             {
                 NeedleStatus = $"Searching (syringe {_syringeDetector.HighestConfidence:F2})";
             }
+
+            return _hasNeedleWorld;
         }
 
         /// <summary>

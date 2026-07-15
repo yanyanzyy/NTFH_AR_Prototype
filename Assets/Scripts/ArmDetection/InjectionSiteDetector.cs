@@ -66,6 +66,12 @@ namespace ARArmDetection
         /// surface — i.e. the arm is actually being touched/poked, not merely approached.</summary>
         public bool    IsContacting          { get; private set; }
 
+        /// <summary>True when the needle tip is within <c>_approachRadiusMeters</c> of the arm
+        /// surface — near enough that the feedback panel should show live guidance even before a
+        /// hard contact. Lets the trainee see a response (and directions onto the vein) as soon as
+        /// the finger nears the arm, instead of only on a perfect poke.</summary>
+        public bool    IsNearArm             { get; private set; }
+
         /// <summary>Signed distance (m) from the needle tip to the arm surface this frame
         /// (negative = inside). Large positive when there is no valid tip/arm.</summary>
         public float   SurfaceDistanceMeters { get; private set; } = float.MaxValue;
@@ -94,6 +100,7 @@ namespace ARArmDetection
             SurfaceDistanceMeters = distToSurface;
             SurfacePoint          = surfacePoint;
             IsContacting          = distToSurface <= _contactRadiusMeters;
+            IsNearArm             = distToSurface <= _approachRadiusMeters;
 
             if (distToSurface <= _approachRadiusMeters)
             {
@@ -146,13 +153,25 @@ namespace ARArmDetection
 
         private void TryResolveBone()
         {
-            if (_rightHandSkeleton == null) return;
+            if (_rightHandSkeleton == null || !_rightHandSkeleton.IsInitialized ||
+                _rightHandSkeleton.Bones == null) return;
+
+            // Legacy Hand_* ids and OpenXR XRHand_* ids share integer values but mean different
+            // bones (legacy Hand_IndexTip == 20 == XRHand_RingTip), so the id must be picked per
+            // skeleton type or the fallback tracks the WRONG finger on XR-hand rigs.
+            var type = _rightHandSkeleton.GetSkeletonType();
+            bool xrHand = type == OVRSkeleton.SkeletonType.XRHandLeft ||
+                          type == OVRSkeleton.SkeletonType.XRHandRight;
+            var tipId = xrHand ? OVRSkeleton.BoneId.XRHand_IndexTip
+                               : OVRSkeleton.BoneId.Hand_IndexTip;
+
             foreach (var bone in _rightHandSkeleton.Bones)
             {
-                if (bone.Id == OVRSkeleton.BoneId.Hand_IndexTip)
+                if (bone == null || bone.Transform == null) continue;
+                if (bone.Id == tipId)
                 {
                     _indexTipBone = bone.Transform;
-                    Debug.Log("[InjectionSiteDetector] Resolved Hand_IndexTip bone.");
+                    Debug.Log($"[InjectionSiteDetector] Resolved index tip bone ({tipId} on {type}).");
                     return;
                 }
             }
@@ -186,6 +205,7 @@ namespace ARArmDetection
         private void ClearContact()
         {
             IsContacting          = false;
+            IsNearArm             = false;
             SurfaceDistanceMeters = float.MaxValue;
         }
 

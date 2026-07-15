@@ -5,15 +5,25 @@ namespace ARArmDetection
     /// <summary>
     /// Coordinates the poke-feedback loop and drives the shared VeinFeedbackUI.
     ///
-    /// While the needle is actually TOUCHING the arm (InjectionSiteDetector.IsContacting):
-    ///   • on a vein  → "CORRECT SPOT" plus the insertion-angle verdict (SyringeAngleEstimator)
-    ///   • off a vein → "WRONG SPOT POKED" plus which way to move
-    /// When nothing is being poked the panel is hidden.
+    /// While the needle (finger/pen or vision syringe) is at the arm:
+    ///   • on a vein  → "CORRECT SPOT" plus the insertion-angle verdict
+    ///   • off a vein → "WRONG SPOT POKED" plus which way to move (yellow arrow to the vein)
+    /// When the needle is away from the arm the panel is hidden.
     ///
-    /// Each contact episode is one "poke". Consecutive wrong pokes are counted; after
-    /// <see cref="_wrongPokesToReveal"/> in a row the arm overlay (the hidden "answer key")
-    /// is flashed on for <see cref="_overlayRevealSeconds"/> so the trainee can see where the
-    /// veins really are. A correct poke resets the streak.
+    /// TWO MEASUREMENT MODES
+    /// ---------------------
+    /// • Direct vein proximity (default, <see cref="_useDirectVeinProximity"/>): the needle TIP is
+    ///   compared straight to the visible vein PATHS (VeinMap). "Touch the vein you can see →
+    ///   CORRECT." This is robust for the finger test because it does NOT depend on the invisible
+    ///   arm collision cylinder, which is placed from the vision lock and is often offset from both
+    ///   the overlay mesh and the veins (the cause of the sequence getting stuck on "Approach").
+    /// • Surface contact (legacy): gates on InjectionSiteDetector.IsContacting, i.e. the tip
+    ///   reaching the arm-cylinder surface. Kept for a real registered syringe where the cylinder
+    ///   is meaningful.
+    ///
+    /// Each contact/poke episode is one attempt. Consecutive wrong pokes are counted; after
+    /// <see cref="_wrongPokesToReveal"/> in a row the arm overlay answer key is flashed on.
+    /// A correct poke resets the streak.
     /// </summary>
     public class VeinFeedbackController : MonoBehaviour
     {
@@ -25,8 +35,26 @@ namespace ARArmDetection
         [Tooltip("Optional — Group 2's SyringeAngleEstimator (under SyringePosePrototype / " +
                  "SyringeLabelContainer). Supplies the insertion-angle verdict shown after a correct spot.")]
         [SerializeField] private SyringeAngleEstimator _angleEstimator;
+        [Tooltip("Optional, PREFERRED — the in-namespace NeedleAngleEstimator, which measures the " +
+                 "angle from the manager's needle axis (works for BOTH the vision syringe and the " +
+                 "simulated finger/pen needle). When it has an angle it wins over the " +
+                 "SyringeAngleEstimator above, whose keypoint spheres only move with the vision model.")]
+        [SerializeField] private NeedleAngleEstimator _needleAngleEstimator;
         [Tooltip("Optional — the answer-key overlay flashed on after repeated wrong pokes.")]
         [SerializeField] private ArmOverlay            _armOverlay;
+
+        [Header("Measurement mode")]
+        [Tooltip("Drive feedback from the needle TIP's distance to the visible vein paths directly, " +
+                 "instead of requiring hard contact with the (often misaligned) arm collision cylinder. " +
+                 "Recommended for the finger test: 'touch the vein you can see → CORRECT'.")]
+        [SerializeField] private bool  _useDirectVeinProximity = true;
+        [Tooltip("Direct mode: show the panel while the tip is within this distance (m) of the nearest " +
+                 "vein path. Large enough to give live guidance as the finger nears the arm.")]
+        [SerializeField] private float _showWithinMeters = 0.10f;
+        [Tooltip("Direct mode: tip within this distance (m) of a vein path counts as an actual poke " +
+                 "attempt (drives the wrong-streak / answer-key reveal). A vein's own hitRadius decides " +
+                 "CORRECT vs WRONG within that.")]
+        [SerializeField] private float _pokeWithinMeters = 0.045f;
 
         [Header("Wrong-poke guidance")]
         [Tooltip("Consecutive wrong-spot pokes before the overlay answer key is revealed.")]
@@ -55,12 +83,99 @@ namespace ARArmDetection
 
         private void Update()
         {
-            if (_injectionDetector == null || _armManager == null)
+            if (_armManager == null || _veinMap == null || _feedbackUI == null)
             {
                 EndEpisodeSilently();
                 return;
             }
 
+            if (_useDirectVeinProximity)
+            {
+                UpdateDirect();
+                return;
+            }
+
+            if (_injectionDetector == null) { EndEpisodeSilently(); return; }
+            UpdateContactBased();
+        }
+
+        // ── Direct vein-proximity mode (finger/needle test) ───────────────────────────
+
+        /// <summary>
+        /// Measures the needle TIP straight against the visible vein paths — no dependency on the
+        /// arm collision cylinder — so touching a vein you can see always registers.
+        /// </summary>
+        private void UpdateDirect()
+        {
+            if (!_armManager.IsLocked ||
+                !_armManager.TryGetNeedleTip(out var tip) ||
+                !_veinMap.QueryNearestVein(tip, out var query))
+            {
+                CoastOrHide();
+                return;
+            }
+
+            bool poking = query.DistanceMeters <= _pokeWithinMeters;
+            bool near   = query.DistanceMeters <= _showWithinMeters;
+
+            if (poking)
+            {
+                _lossTimer = 0f;
+                if (!_episodeActive)        // rising edge: a new poke begins
+                {
+                    _episodeActive = true;
+                    _lastOnVein    = false;
+                }
+                ShowFeedback(query, tip);
+                return;
+            }
+
+            // Not poking any more: hold an active episode through the grace, then finalise it.
+            if (_episodeActive)
+            {
+                _lossTimer += Time.deltaTime;
+                if (_lossTimer < _contactLossGraceSeconds)
+                {
+                    ShowFeedback(query, tip);   // keep the panel live during grace
+                    return;
+                }
+                FinaliseEpisode();
+                _episodeActive = false;
+                _lossTimer     = 0f;
+            }
+
+            // Hovering near the arm but not poking: still show live guidance onto the vein.
+            if (near)
+            {
+                ShowFeedback(query, tip);
+                return;
+            }
+
+            _feedbackUI.Hide();
+        }
+
+        /// <summary>Finalises an active poke after the grace window, else hides the panel. Used when
+        /// the arm/needle is momentarily unavailable in direct mode.</summary>
+        private void CoastOrHide()
+        {
+            if (_episodeActive)
+            {
+                _lossTimer += Time.deltaTime;
+                if (_lossTimer < _contactLossGraceSeconds) return;
+                FinaliseEpisode();
+                _episodeActive = false;
+                _lossTimer     = 0f;
+            }
+            _feedbackUI.Hide();
+        }
+
+        // ── Legacy surface-contact mode (real registered syringe) ─────────────────────
+
+        private void UpdateContactBased()
+        {
+            // A "poke" episode is defined by real CONTACT (drives the correct/wrong streak and
+            // the answer-key reveal). The panel also shows live guidance the moment the finger is
+            // merely NEAR the arm, so the trainee always gets a visible response.
             if (_injectionDetector.IsContacting)
             {
                 _lossTimer = 0f;
@@ -69,32 +184,51 @@ namespace ARArmDetection
                     _episodeActive = true;
                     _lastOnVein    = false;
                 }
-                UpdateLiveFeedback();
+                UpdateLiveFeedbackFromSurface();
                 return;
             }
 
-            // Not contacting: hold the episode open through a short grace, then finalise it.
             if (_episodeActive)
             {
                 _lossTimer += Time.deltaTime;
-                if (_lossTimer < _contactLossGraceSeconds) return;   // still within grace — keep last UI
-
+                if (_lossTimer < _contactLossGraceSeconds)
+                {
+                    UpdateLiveFeedbackFromSurface();
+                    return;
+                }
                 FinaliseEpisode();
                 _episodeActive = false;
                 _lossTimer     = 0f;
             }
-            _feedbackUI?.Hide();
+
+            if (_injectionDetector.IsNearArm)
+            {
+                UpdateLiveFeedbackFromSurface();
+                return;
+            }
+
+            _feedbackUI.Hide();
         }
 
-        // ── Live feedback while touching the arm ──────────────────────────────────────
-
-        private void UpdateLiveFeedback()
+        private void UpdateLiveFeedbackFromSurface()
         {
-            if (_veinMap == null
-                || !_veinMap.QueryNearestVein(_injectionDetector.SurfacePoint, out var query)
-                || !_armManager.TryGetArmEndpoints(out var shoulder, out var wrist))
+            if (!_veinMap.QueryNearestVein(_injectionDetector.SurfacePoint, out var query))
             {
-                _feedbackUI?.Hide();
+                _feedbackUI.Hide();
+                return;
+            }
+            ShowFeedback(query, _injectionDetector.SurfacePoint);
+        }
+
+        // ── Shared feedback builder ───────────────────────────────────────────────────
+
+        /// <summary>Builds the feedback panel data for a vein query at <paramref name="injectionPoint"/>
+        /// and shows it. Shared by both measurement modes.</summary>
+        private void ShowFeedback(VeinMap.QueryResult query, Vector3 injectionPoint)
+        {
+            if (!_armManager.TryGetArmEndpoints(out var shoulder, out var wrist))
+            {
+                _feedbackUI.Hide();
                 return;
             }
 
@@ -115,24 +249,37 @@ namespace ARArmDetection
                 IsOnVein       = query.IsOnVein,
                 VeinName       = query.Vein.name,
                 VeinWorldPos   = query.VeinWorldPos,
-                InjectionPoint = _injectionDetector.SurfacePoint,
+                InjectionPoint = injectionPoint,
                 AlongArmMeters = alongArm,
                 CrossArmMeters = crossDelta.magnitude,
                 CrossArmRight  = moveRight,
                 TotalDistance  = query.DistanceMeters,
             };
 
-            // On a correct spot, follow up with the insertion-angle verdict.
-            if (query.IsOnVein && _angleEstimator != null)
+            // On a correct spot, follow up with the insertion-angle verdict. Prefer the needle-axis
+            // estimator (covers vision AND simulated needles); fall back to Group 2's keypoint-sphere
+            // estimator when it's the only one measuring.
+            if (query.IsOnVein)
             {
-                data.HasAngle        = _angleEstimator.HasAngle;
-                data.AngleDegrees    = _angleEstimator.CurrentInsertionAngle;
-                data.AngleAcceptable = _angleEstimator.IsAngleAcceptable;
-                data.AngleMin        = _angleEstimator.MinAcceptableAngle;
-                data.AngleMax        = _angleEstimator.MaxAcceptableAngle;
+                if (_needleAngleEstimator != null && _needleAngleEstimator.HasAngle)
+                {
+                    data.HasAngle        = true;
+                    data.AngleDegrees    = _needleAngleEstimator.CurrentInsertionAngle;
+                    data.AngleAcceptable = _needleAngleEstimator.IsAngleAcceptable;
+                    data.AngleMin        = _needleAngleEstimator.MinAcceptableAngle;
+                    data.AngleMax        = _needleAngleEstimator.MaxAcceptableAngle;
+                }
+                else if (_angleEstimator != null)
+                {
+                    data.HasAngle        = _angleEstimator.HasAngle;
+                    data.AngleDegrees    = _angleEstimator.CurrentInsertionAngle;
+                    data.AngleAcceptable = _angleEstimator.IsAngleAcceptable;
+                    data.AngleMin        = _angleEstimator.MinAcceptableAngle;
+                    data.AngleMax        = _angleEstimator.MaxAcceptableAngle;
+                }
             }
 
-            _feedbackUI?.Show(data);
+            _feedbackUI.Show(data);
         }
 
         // ── Episode bookkeeping ───────────────────────────────────────────────────────

@@ -35,6 +35,25 @@ namespace ARArmDetection
         [Tooltip("Group 2's SyringeAngleEstimator (under SyringePosePrototype / SyringeLabelContainer). " +
                  "Supplies the insertion-angle stage.")]
         [SerializeField] private SyringeAngleEstimator _angleEstimator;
+        [Tooltip("Optional, PREFERRED — the in-namespace NeedleAngleEstimator, which measures the " +
+                 "angle from the manager's needle axis (works for BOTH the vision syringe and the " +
+                 "simulated finger/pen needle). When it has an angle it wins over the estimator above.")]
+        [SerializeField] private NeedleAngleEstimator _needleAngleEstimator;
+
+        [Header("Finger test (direct vein proximity)")]
+        [Tooltip("Grade the attempt from the needle TIP's distance to the visible vein paths " +
+                 "directly, instead of the arm collision cylinder. Recommended for the finger test: " +
+                 "the cylinder (from the vision lock) is usually offset from the veins, which leaves " +
+                 "the cylinder-based flow stuck on 'Approach the arm'. Depth is not measured with a " +
+                 "finger, so success here = on the vein (angle shown as info, gated only if required).")]
+        [SerializeField] private bool  _useDirectVeinProximity = true;
+        [Tooltip("Direct mode: tip within this distance (m) of a vein path counts as being AT the arm " +
+                 "(the contact stage). A vein's own hitRadius then decides right vs wrong spot.")]
+        [SerializeField] private float _directContactMeters = 0.06f;
+        [Tooltip("Direct mode: also require an acceptable insertion angle for success. Off by default " +
+                 "— a fingertip points nearly flat, so demanding a 15–30° needle angle would keep the " +
+                 "finger test from ever succeeding. The angle is still shown as info.")]
+        [SerializeField] private bool  _requireAngleInDirectMode = false;
 
         [Header("Arm model")]
         [Tooltip("Physical radius of the mannequin arm at injection sites (forearm ~4.25 cm). " +
@@ -93,6 +112,12 @@ namespace ARArmDetection
 
         private void Update()
         {
+            if (_useDirectVeinProximity)
+            {
+                UpdateDirect();
+                return;
+            }
+
             ContactOk = SpotOk = AngleOk = DepthOk = false;
 
             // Prerequisites: locked arm + tracked needle.
@@ -168,17 +193,16 @@ namespace ARArmDetection
             }
 
             // ── Stage 3: angle ──────────────────────────────────────────────────────────
-            if (_angleEstimator == null || !_angleEstimator.HasAngle)
+            if (!TryGetInsertionAngle(out float angle, out bool angleOk, out float minA, out float maxA))
             {
                 SetStage(Stage.Angle, $"On {vein.Vein.name} — angle unavailable");
                 return;
             }
-            AngleOk = _angleEstimator.IsAngleAcceptable;
+            AngleOk = angleOk;
             if (!AngleOk)
             {
                 SetStage(Stage.Angle,
-                    $"On {vein.Vein.name} — fix angle: {_angleEstimator.CurrentInsertionAngle:F0}° " +
-                    $"(need {_angleEstimator.MinAcceptableAngle:F0}–{_angleEstimator.MaxAcceptableAngle:F0}°)");
+                    $"On {vein.Vein.name} — fix angle: {angle:F0}° (need {minA:F0}–{maxA:F0}°)");
                 return;
             }
 
@@ -200,8 +224,118 @@ namespace ARArmDetection
             // ── All checks passed ───────────────────────────────────────────────────────
             _succeeded = true;
             SetStage(Stage.Success,
-                $"SUCCESS — {vein.Vein.name} at {_angleEstimator.CurrentInsertionAngle:F0}°, " +
+                $"SUCCESS — {vein.Vein.name} at {angle:F0}°, " +
                 $"{PenetrationMeters * 1000f:F0} mm deep");
+            OnSuccess?.Invoke();
+        }
+
+        /// <summary>Reads the insertion angle from whichever estimator currently has one —
+        /// the needle-axis estimator first (vision + simulated needles), then Group 2's
+        /// keypoint-sphere estimator. Returns false when neither can measure.</summary>
+        private bool TryGetInsertionAngle(out float angle, out bool acceptable,
+                                          out float min, out float max)
+        {
+            if (_needleAngleEstimator != null && _needleAngleEstimator.HasAngle)
+            {
+                angle      = _needleAngleEstimator.CurrentInsertionAngle;
+                acceptable = _needleAngleEstimator.IsAngleAcceptable;
+                min        = _needleAngleEstimator.MinAcceptableAngle;
+                max        = _needleAngleEstimator.MaxAcceptableAngle;
+                return true;
+            }
+            if (_angleEstimator != null && _angleEstimator.HasAngle)
+            {
+                angle      = _angleEstimator.CurrentInsertionAngle;
+                acceptable = _angleEstimator.IsAngleAcceptable;
+                min        = _angleEstimator.MinAcceptableAngle;
+                max        = _angleEstimator.MaxAcceptableAngle;
+                return true;
+            }
+            angle = 0f; acceptable = false; min = 0f; max = 0f;
+            return false;
+        }
+
+        /// <summary>
+        /// Finger-test grading: measures the needle TIP straight against the visible vein paths,
+        /// bypassing the arm collision cylinder (which the vision lock usually places offset from
+        /// the veins). Stages: Contact (near a vein) → Spot (on the vein) → Success. Depth is not
+        /// measurable with a fingertip, so it is not gated; the insertion angle is shown as info and
+        /// only gated when <see cref="_requireAngleInDirectMode"/> is set.
+        /// </summary>
+        private void UpdateDirect()
+        {
+            ContactOk = SpotOk = AngleOk = DepthOk = false;
+            PenetrationMeters = 0f;
+
+            if (_armManager == null || !_armManager.IsLocked ||
+                _veinMap == null || !_armManager.TryGetNeedleTip(out var tip) ||
+                !_veinMap.QueryNearestVein(tip, out var vein))
+            {
+                if (_attemptActive && TickLossGrace()) return;
+                EndAttemptIfActive("Waiting for needle / vein map");
+                return;
+            }
+
+            float dist = vein.DistanceMeters;
+            NearestVeinName    = vein.Vein.name;
+            VeinDistanceMeters = dist;
+
+            // ── Stage 1: at the arm (near a vein path) ──────────────────────────────────
+            bool near = dist <= _directContactMeters;
+            if (near)
+            {
+                _contactLossTimer = 0f;
+                _contactDwellTimer += Time.deltaTime;
+            }
+            else if (_attemptActive)
+            {
+                if (TickLossGrace()) return;
+                EndAttemptIfActive($"Approach a vein ({dist * 100f:F1} cm away)");
+                return;
+            }
+            else
+            {
+                _contactDwellTimer = 0f;
+                SetStage(Stage.Contact, $"Approach a vein ({dist * 100f:F1} cm away)");
+                return;
+            }
+
+            if (!_attemptActive && _contactDwellTimer < _contactDwellSeconds)
+            {
+                SetStage(Stage.Contact, "At the arm — hold steady…");
+                return;
+            }
+            _attemptActive = true;
+            ContactOk = true;
+
+            if (_succeeded) { SetStage(Stage.Success, StatusText); return; }
+
+            // ── Stage 2: right spot (on the vein) ───────────────────────────────────────
+            SpotOk = vein.IsOnVein;
+            if (!SpotOk)
+            {
+                SetStage(Stage.Spot,
+                    $"Wrong spot — {vein.Vein.name} is {dist * 100f:F1} cm away");
+                return;
+            }
+
+            // ── Stage 3: angle (info by default; gated only when required) ──────────────
+            bool haveAngle = TryGetInsertionAngle(out float angle, out bool angleOk, out float minA, out float maxA);
+            AngleOk = haveAngle && angleOk;
+            if (_requireAngleInDirectMode && haveAngle && !angleOk)
+            {
+                SetStage(Stage.Angle,
+                    $"On {vein.Vein.name} — fix angle: {angle:F0}° (need {minA:F0}–{maxA:F0}°)");
+                return;
+            }
+
+            // ── Success: a fingertip can't penetrate, so on-vein is the goal ────────────
+            DepthOk = true;
+            _succeeded = true;
+            string angleNote = haveAngle
+                ? $" at {angle:F0}°{(angleOk ? "" : " (angle off)")}"
+                : "";
+            SetStage(Stage.Success, $"SUCCESS — on {vein.Vein.name}{angleNote}");
             OnSuccess?.Invoke();
         }
 

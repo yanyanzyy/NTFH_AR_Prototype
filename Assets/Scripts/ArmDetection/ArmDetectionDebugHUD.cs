@@ -15,6 +15,9 @@ namespace ARArmDetection
         [SerializeField] private ArmDetectionManager     _manager;
         [SerializeField] private NeedleAngleEstimator    _angleEstimator;
         [SerializeField] private InjectionSequenceEvaluator _injectionEvaluator;
+        [Tooltip("Optional — the finger/pen test rig. Shows whether the simulated needle is " +
+                 "actually feeding (hand tracked + bones resolved) so 'nothing happens' can be diagnosed.")]
+        [SerializeField] private SimulatedNeedleProvider  _simulatedNeedle;
         [SerializeField] private float                   _distanceMeters = 1.5f;
 
         private Canvas    _canvas;
@@ -135,6 +138,7 @@ namespace ARArmDetection
                 $"Arm found : {(foundArm ? "<color=lime>YES</color>" : "no")}\n" +
                 $"Lock      : {(_manager != null ? (_manager.IsLocked ? $"<color=lime>{_manager.LockStatus}</color>" : _manager.LockStatus) : "—")}\n" +
                 $"Needle    : {(_manager != null ? _manager.NeedleStatus : "—")}\n" +
+                $"Finger rig: {SimulatedNeedleText()}\n" +
                 $"Angle     : {NeedleAngleText()}\n" +
                 $"Inject    : {InjectionText()}\n" +
                 $"DepthAxis : {(_manager != null ? _manager.DepthAxisStatus : "—")}\n" +
@@ -156,6 +160,15 @@ namespace ARArmDetection
                 _                                        => "orange",
             };
             return $"<color={color}>[{_injectionEvaluator.CurrentStage}]</color> {_injectionEvaluator.StatusText}";
+        }
+
+        private string SimulatedNeedleText()
+        {
+            if (_simulatedNeedle == null) return "<color=grey>— (not wired)</color>";
+            if (!_simulatedNeedle.isActiveAndEnabled) return "<color=grey>disabled</color>";
+            string s = _simulatedNeedle.Status;
+            bool feeding = s != null && s.StartsWith("Feeding");
+            return $"<color={(feeding ? "lime" : "orange")}>{s}</color>";
         }
 
         private string NeedleAngleText()

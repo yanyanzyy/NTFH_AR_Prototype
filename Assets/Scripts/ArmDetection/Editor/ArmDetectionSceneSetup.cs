@@ -304,6 +304,114 @@ namespace ARArmDetection.EditorTools
             Debug.Log("[ArmDetection] VeinPathVisualizer added — vein paths render as coloured lines once the arm locks.");
         }
 
+        /// <summary>
+        /// Adds (or re-wires) the vein TEST RIG: a SimulatedNeedleProvider that uses a tracked
+        /// fingertip (or a pen in a pinch grip) as the syringe, plus a NeedleAngleEstimator so
+        /// the insertion-angle stage works from the simulated needle axis. Wires everything
+        /// into the VeinSystem's controller/evaluator and the debug HUD. The syringe vision
+        /// path is left untouched — disable the provider component to hand control back to it.
+        /// Safe to run again.
+        /// </summary>
+        [MenuItem("Tools/AR Arm Detection/Add Vein Test Rig (Finger As Syringe)")]
+        public static void AddVeinTestRig()
+        {
+            var veinMap = Object.FindFirstObjectByType<VeinMap>();
+            if (veinMap == null)
+            {
+                Debug.LogError("[ArmDetection] No VeinMap found in the scene. Set up the VeinSystem " +
+                               "object (VeinMap + InjectionSiteDetector + feedback components) first.");
+                return;
+            }
+            var host = veinMap.gameObject;
+
+            var manager = Object.FindFirstObjectByType<ArmDetectionManager>();
+            if (manager == null)
+            {
+                Debug.LogError("[ArmDetection] No ArmDetectionManager in the scene — add the prototype first.");
+                return;
+            }
+
+            // ── Simulated needle provider (fingertip → manager.SetSimulatedNeedle) ──────
+            var provider = Object.FindFirstObjectByType<SimulatedNeedleProvider>();
+            if (provider == null) provider = Undo.AddComponent<SimulatedNeedleProvider>(host);
+            WireReference(provider, "_manager", manager);
+
+            var rightHand = FindHandSkeleton(preferRight: true);
+            if (rightHand != null) WireReference(provider, "_handSkeleton", rightHand);
+            else Debug.LogWarning("[ArmDetection] No right-hand OVRSkeleton found — the provider " +
+                                  "will auto-find one at runtime, or assign _handSkeleton manually.");
+
+            // ── Needle-axis angle estimator (works for vision AND simulated needles) ────
+            var angleEstimator = Object.FindFirstObjectByType<NeedleAngleEstimator>();
+            if (angleEstimator == null) angleEstimator = Undo.AddComponent<NeedleAngleEstimator>(host);
+            WireReference(angleEstimator, "_armManager", manager);
+
+            // ── Route the angle into the feedback controller + sequence evaluator ───────
+            var controller = host.GetComponent<VeinFeedbackController>();
+            if (controller != null) WireReference(controller, "_needleAngleEstimator", angleEstimator);
+
+            var evaluator = host.GetComponent<InjectionSequenceEvaluator>();
+            if (evaluator != null)
+            {
+                WireReference(evaluator, "_armManager", manager);
+                WireReference(evaluator, "_veinMap", veinMap);
+                WireReference(evaluator, "_needleAngleEstimator", angleEstimator);
+            }
+            else
+            {
+                Debug.LogWarning("[ArmDetection] No InjectionSequenceEvaluator on the VeinSystem — " +
+                                 "run 'Add Injection Sequence Evaluator' for the staged HUD assessment.");
+            }
+
+            // ── Debug HUD (angle + injection stages were unwired before this) ───────────
+            var hud = Object.FindFirstObjectByType<ArmDetectionDebugHUD>();
+            if (hud != null)
+            {
+                WireReference(hud, "_manager", manager);
+                WireReference(hud, "_angleEstimator", angleEstimator);
+                WireReference(hud, "_simulatedNeedle", provider);
+                if (evaluator != null) WireReference(hud, "_injectionEvaluator", evaluator);
+            }
+
+            // ── Clean locked-only trainer HUD (Facilitator-style summary panel) ─────────
+            var trainerHud = Object.FindFirstObjectByType<VeinTrainerHUD>();
+            if (trainerHud == null)
+            {
+                var hudGo = new GameObject("VeinTrainerHUD");
+                trainerHud = hudGo.AddComponent<VeinTrainerHUD>();
+                Undo.RegisterCreatedObjectUndo(hudGo, "Add Vein Trainer HUD");
+            }
+            WireReference(trainerHud, "_manager", manager);
+            if (evaluator != null) WireReference(trainerHud, "_evaluator", evaluator);
+            WireReference(trainerHud, "_simulatedNeedle", provider);
+            WireReference(trainerHud, "_angleEstimator", angleEstimator);
+
+            EditorSceneManager.MarkSceneDirty(EditorSceneManager.GetActiveScene());
+            Selection.activeGameObject = host;
+            Debug.Log("[ArmDetection] Vein test rig wired on '" + host.name + "': lock the arm, then " +
+                      "point the RIGHT INDEX fingertip at the overlay — contact/vein/angle feedback runs " +
+                      "off the finger. Change the finger (or add a pen-tip offset) on the " +
+                      "SimulatedNeedleProvider component.");
+        }
+
+        private static OVRSkeleton FindHandSkeleton(bool preferRight)
+        {
+            OVRSkeleton fallback = null;
+            foreach (var skel in Object.FindObjectsByType<OVRSkeleton>(
+                         FindObjectsInactive.Include, FindObjectsSortMode.None))
+            {
+                var type = skel.GetSkeletonType();
+                bool isRight = type == OVRSkeleton.SkeletonType.HandRight ||
+                               type == OVRSkeleton.SkeletonType.XRHandRight;
+                bool isLeft = type == OVRSkeleton.SkeletonType.HandLeft ||
+                              type == OVRSkeleton.SkeletonType.XRHandLeft;
+                if (!isRight && !isLeft) continue;
+                if (isRight == preferRight) return skel;
+                fallback = skel;
+            }
+            return fallback;
+        }
+
         [MenuItem("Tools/AR Arm Detection/Add MediaPipe Hand Detector")]
         public static void AddMediaPipeHandDetector()
         {
