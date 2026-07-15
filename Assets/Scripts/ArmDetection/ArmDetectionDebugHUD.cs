@@ -137,6 +137,7 @@ namespace ARArmDetection
                 $"Arm status: {armStatus}\n" +
                 $"Arm found : {(foundArm ? "<color=lime>YES</color>" : "no")}\n" +
                 $"Lock      : {(_manager != null ? (_manager.IsLocked ? $"<color=lime>{_manager.LockStatus}</color>" : _manager.LockStatus) : "—")}\n" +
+                $"Anchor    : {(_manager != null ? _manager.LockAnchorStatus : "—")}\n" +
                 $"Needle    : {(_manager != null ? _manager.NeedleStatus : "—")}\n" +
                 $"Finger rig: {SimulatedNeedleText()}\n" +
                 $"Angle     : {NeedleAngleText()}\n" +

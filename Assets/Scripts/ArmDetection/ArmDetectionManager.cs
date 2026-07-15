@@ -134,6 +134,15 @@ namespace ARArmDetection
                  "The model resumes automatically the moment the lock is released.")]
         [SerializeField] private bool _suspendDetectionWhileFrozen = true;
 
+        [Header("World-locked spatial anchor")]
+        [Tooltip("Pin the frozen overlay to a Meta SPATIAL ANCHOR so it stays fixed on the PHYSICAL " +
+                 "arm even after the headset is removed and re-donned. Taking the headset off re-centres " +
+                 "the tracking origin, which shifts any raw world-space pose (the overlay 'jumps' when " +
+                 "you put it back on). A spatial anchor re-localises against the real room instead, so " +
+                 "the overlay snaps back onto the arm. Falls back to the raw frozen pose automatically " +
+                 "if anchors are unsupported or not yet localised.")]
+        [SerializeField] private bool _anchorFrozenArm = true;
+
         [Header("Depth-based arm axis (bypasses keypoint regression)")]
         [Tooltip("When a depth raycaster is available, estimate the arm's 3D axis by sampling a grid " +
                  "of points across the detected box and raycasting them against real-world depth, then " +
@@ -215,6 +224,9 @@ namespace ARArmDetection
         /// <summary>Human-readable lock state for the HUD and the unlock button.</summary>
         public string LockStatus { get; private set; } = "Searching";
 
+        /// <summary>Human-readable spatial-anchor state for the HUD (off / localising / world-locked).</summary>
+        public string LockAnchorStatus { get; private set; } = "Anchor: off";
+
         /// <summary>
         /// Releases the current target lock so a new arm can be acquired. Wired to the
         /// UNLOCK ARM button, the hand pinch-hold gesture, and controller B (see
@@ -227,6 +239,7 @@ namespace ARArmDetection
             _acquireGapSeconds = 0f;
             _lockLostSeconds = 0f;
             ResetArmStability();
+            DestroyArmAnchor();
             LockStatus = "Searching (unlocked)";
             Debug.Log("[ArmManager] Target lock released — searching for a new arm.");
         }
@@ -330,6 +343,15 @@ namespace ARArmDetection
 
         private bool _hasStableFixedAxisDepth;
         private float _stableFixedAxisDepth;
+
+        // Spatial anchor holding the frozen arm pose in physical-world space (survives headset
+        // re-donning / tracking-origin re-centring). Endpoints are stored in the anchor's local
+        // frame at freeze time and re-derived from the anchor's live pose every frame.
+        private GameObject _armAnchorGO;
+        private OVRSpatialAnchor _armAnchor;
+        private Vector3 _anchorLocalShoulder;
+        private Vector3 _anchorLocalWrist;
+        private bool _armAnchorRequested;
 
         private bool _hasNeedleWorld;
         private Vector3 _smoothedNeedleTipWorld;
@@ -440,6 +462,11 @@ namespace ARArmDetection
             // heats the headset into throttling and eventually crashes the app.
             if (_suspendDetectionWhileFrozen && IsLockFrozen() && _hasStableArmImage && _hasSmoothedArmWorld)
             {
+                // Pin the frozen pose to a spatial anchor and thereafter drive the endpoints from it,
+                // so the overlay stays on the physical arm across headset re-donning.
+                CreateArmAnchor();
+                UpdateArmAnchorPose();
+
                 bool heldFound = false;
                 ArmCandidate held = default;
                 int heldIdx = -1;
@@ -530,6 +557,9 @@ namespace ARArmDetection
                     // detections are ignored. The physical arm hasn't moved - any pose change
                     // from here on would come from detection shift as the user moves and looks
                     // around, which is exactly the wobble/drift the freeze exists to prevent.
+                    // Pin it to a spatial anchor so it also survives headset re-donning.
+                    CreateArmAnchor();
+                    UpdateArmAnchorPose();
                     UseHeldLockPose(ref found, ref best, ref selectedIdx, ref selectedSide);
                     LockStatus = "Locked (frozen in place)";
                     renderOverlay = found;
@@ -1320,6 +1350,84 @@ namespace ARArmDetection
             _hasStableArmImage = false;
             _hasSmoothedArmWorld = false;
             _hasStableFixedAxisDepth = false;
+        }
+
+        /// <summary>
+        /// Creates a Meta spatial anchor at the frozen arm pose (once per lock). The anchor is
+        /// pinned to the PHYSICAL room by the OS, so it — and everything derived from it — survives
+        /// the tracking-origin re-centring that happens when the headset is removed and re-donned,
+        /// which otherwise makes a raw world-space overlay jump off the arm. The current smoothed
+        /// endpoints are stored in the anchor's local frame before the OS takes over its transform.
+        /// </summary>
+        private void CreateArmAnchor()
+        {
+            if (!_anchorFrozenArm || _armAnchorRequested || !_hasSmoothedArmWorld) return;
+            _armAnchorRequested = true;
+
+            Vector3 mid = (_smoothedShoulderWorld + _smoothedWristWorld) * 0.5f;
+            Vector3 dir = _smoothedWristWorld - _smoothedShoulderWorld;
+            Quaternion rot = dir.sqrMagnitude > 1e-6f
+                ? Quaternion.LookRotation(dir.normalized, Vector3.up)
+                : Quaternion.identity;
+
+            _armAnchorGO = new GameObject("ArmLockAnchor");
+            _armAnchorGO.transform.SetPositionAndRotation(mid, rot);
+
+            // Capture the endpoints relative to the anchor BEFORE adding the component — once the OS
+            // owns the transform we only ever read it, never move it.
+            _anchorLocalShoulder = _armAnchorGO.transform.InverseTransformPoint(_smoothedShoulderWorld);
+            _anchorLocalWrist    = _armAnchorGO.transform.InverseTransformPoint(_smoothedWristWorld);
+
+            try
+            {
+                _armAnchor = _armAnchorGO.AddComponent<OVRSpatialAnchor>();
+                LockAnchorStatus = "Anchor: localising…";
+                Debug.Log("[ArmManager] Created spatial anchor for the frozen arm lock.");
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[ArmManager] Spatial anchor unavailable ({e.Message}); " +
+                                 "holding the raw world-space lock instead.");
+                Destroy(_armAnchorGO);
+                _armAnchorGO = null;
+                _armAnchor = null;
+                LockAnchorStatus = "Anchor: unavailable (raw lock)";
+            }
+        }
+
+        /// <summary>While the anchor is created and tracked, drives the frozen endpoints from its live
+        /// pose so the overlay follows the physical arm through tracking re-centres. No-op (keeps the
+        /// last good pose) until the anchor localises, or when anchoring is off/unavailable.</summary>
+        private void UpdateArmAnchorPose()
+        {
+            if (_armAnchor == null || !_armAnchor.Created || _armAnchorGO == null)
+            {
+                if (_armAnchorRequested && _armAnchor == null)
+                    LockAnchorStatus = "Anchor: unavailable (raw lock)";
+                return;
+            }
+
+            if (!_armAnchor.IsTracked)
+            {
+                // Anchor exists but tracking is momentarily lost (e.g. mid re-localisation after
+                // re-donning) — hold the last good pose rather than snapping to a stale transform.
+                LockAnchorStatus = "Anchor: re-localising…";
+                return;
+            }
+
+            var t = _armAnchorGO.transform;
+            _smoothedShoulderWorld = t.TransformPoint(_anchorLocalShoulder);
+            _smoothedWristWorld    = t.TransformPoint(_anchorLocalWrist);
+            LockAnchorStatus = "Anchor: world-locked";
+        }
+
+        private void DestroyArmAnchor()
+        {
+            if (_armAnchorGO != null) Destroy(_armAnchorGO);
+            _armAnchorGO = null;
+            _armAnchor = null;
+            _armAnchorRequested = false;
+            LockAnchorStatus = _anchorFrozenArm ? "Anchor: off" : "Anchor: disabled";
         }
 
         private float GetStableFixedAxisDepth(float rawDepth)

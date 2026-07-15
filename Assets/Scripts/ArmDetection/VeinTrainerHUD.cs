@@ -185,8 +185,19 @@ namespace ARArmDetection
             // Guidance line straight from the evaluator.
             SetText(_guidanceText, _evaluator != null ? _evaluator.StatusText : "", Muted);
 
-            // Lock footer.
-            SetText(_lockText, _manager != null ? _manager.LockStatus : "", Muted);
+            // Lock footer + anchor state (world-locked = survives headset re-donning).
+            if (_manager != null)
+            {
+                string anchor = _manager.LockAnchorStatus;
+                bool anchored = anchor != null && anchor.Contains("world-locked");
+                SetText(_lockText,
+                    $"{_manager.LockStatus}   <color=#{ColorHex(anchored ? Good : Muted)}>{anchor}</color>",
+                    Muted);
+            }
+            else
+            {
+                SetText(_lockText, "", Muted);
+            }
 
             UpdateStagePips(stage);
         }
