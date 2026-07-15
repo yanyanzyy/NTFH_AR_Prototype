@@ -9,6 +9,7 @@ public class SyringeDebugHUD : MonoBehaviour
 
     private GameObject _panelRoot;
     private Text _hudText;
+    private bool _placedInWorld;
 
     private void Awake()
     {
@@ -43,6 +44,18 @@ public class SyringeDebugHUD : MonoBehaviour
         _hudText.fontSize = 16;
         _hudText.color = Color.white;
         _hudText.alignment = TextAnchor.UpperLeft;
+
+        // 4. Make the panel grabbable/movable with a hand pinch - same mechanic as the
+        // Facilitator "Vacutainer Method" panel in ArmDetectionScene
+        // (ARArmDetection.Facilitator.FacilitatorHandPanelDrag). No next/previous buttons on a
+        // read-only debug HUD, so those Initialize() params are just left null - the component
+        // already treats a null button rect as "skip that hover/hold check".
+        var grabCollider = _panelRoot.AddComponent<BoxCollider>();
+        grabCollider.size = new Vector3(500f, 300f, 12f);
+
+        var handDrag = gameObject.AddComponent<ARArmDetection.Facilitator.FacilitatorHandPanelDrag>();
+        handDrag.Initialize(transform, grabCollider, null, null, null, null, null, null, null, null,
+            onPanelGrabStarted: () => _placedInWorld = true);
     }
 
     void Start()
@@ -56,13 +69,18 @@ public class SyringeDebugHUD : MonoBehaviour
         if (detector == null) detector = FindAnyObjectByType<CustomSyringeDetector>();
         if (angleEstimator == null) angleEstimator = FindAnyObjectByType<SyringeAngleEstimator>();
 
-        // Anchor the debug panel directly in front of your head/camera view space
+        // Anchor the debug panel directly in front of your head/camera view space, until the
+        // user pinch-grabs it (FacilitatorHandPanelDrag then owns transform.position/rotation
+        // and this auto-follow would otherwise fight it back to the camera every frame).
         var cam = Camera.main;
         if (cam == null) return;
 
-        Transform ct = cam.transform;
-        transform.position = ct.position + ct.forward * 1.2f + ct.up * -0.2f; // 1.2 meters away, slightly lowered
-        transform.rotation = Quaternion.LookRotation((transform.position - ct.position).normalized, ct.up);
+        if (!_placedInWorld)
+        {
+            Transform ct = cam.transform;
+            transform.position = ct.position + ct.forward * 1.2f + ct.up * -0.2f; // 1.2 meters away, slightly lowered
+            transform.rotation = Quaternion.LookRotation((transform.position - ct.position).normalized, ct.up);
+        }
 
         // 5. Update data display strings
         if (_hudText == null) return;
