@@ -9,9 +9,13 @@ namespace ARArmDetection.Facilitator
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void CreateForArmDetectionScene()
         {
-            return; // Disable temporarily for pose debugging
-            if (Object.FindFirstObjectByType<ArmDetectionManager>() == null) return;
-            if (Object.FindFirstObjectByType<FacilitatorModeController>() != null) return;
+            // Check for EITHER the Arm Detection system OR your new Custom Syringe Detector.
+            // This prevents the facilitator from crashing out silently when testing the syringe scene.
+            bool hasArmDetection = UnityEngine.Object.FindAnyObjectByType<ArmDetectionManager>() != null;
+            bool hasSyringeDetection = UnityEngine.Object.FindAnyObjectByType<CustomSyringeDetector>() != null;
+
+            if (!hasArmDetection && !hasSyringeDetection) return;
+            if (UnityEngine.Object.FindAnyObjectByType<FacilitatorModeController>() != null) return;
 
             var procedure = Resources.Load<FacilitatorProcedure>(DefaultProcedurePath);
             if (procedure == null)

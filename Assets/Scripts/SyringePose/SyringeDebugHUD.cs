@@ -5,6 +5,7 @@ public class SyringeDebugHUD : MonoBehaviour
 {
     [Header("Dependencies to Monitor")]
     [SerializeField] private CustomSyringeDetector detector;
+    [SerializeField] private SyringeAngleEstimator angleEstimator;
 
     private GameObject _panelRoot;
     private Text _hudText;
@@ -17,7 +18,7 @@ public class SyringeDebugHUD : MonoBehaviour
 
         var canvas = _panelRoot.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.WorldSpace;
-        
+
         var canvasRt = (RectTransform)_panelRoot.transform;
         canvasRt.sizeDelta = new Vector2(500f, 300f);
         canvasRt.localScale = Vector3.one * 0.0015f; // Scale down so it fits comfortably in VR view
@@ -44,9 +45,18 @@ public class SyringeDebugHUD : MonoBehaviour
         _hudText.alignment = TextAnchor.UpperLeft;
     }
 
+    void Start()
+    {
+        if (detector == null) detector = FindAnyObjectByType<CustomSyringeDetector>();
+        if (angleEstimator == null) angleEstimator = FindAnyObjectByType<SyringeAngleEstimator>();
+    }
+
     private void LateUpdate()
     {
-        // 4. Anchor the debug panel directly in front of your head/camera view space
+        if (detector == null) detector = FindAnyObjectByType<CustomSyringeDetector>();
+        if (angleEstimator == null) angleEstimator = FindAnyObjectByType<SyringeAngleEstimator>();
+
+        // Anchor the debug panel directly in front of your head/camera view space
         var cam = Camera.main;
         if (cam == null) return;
 
@@ -69,12 +79,33 @@ public class SyringeDebugHUD : MonoBehaviour
             sb.AppendLine($"Live Inference Output Loop: {(detector.isActiveAndEnabled ? "<color=green>ACTIVE</color>" : "<color=yellow>PAUSED</color>")}");
             sb.AppendLine($"Max Box Confidence: {detector.HighestConfidence:F4}");
             sb.AppendLine($"Detection State: {(detector.IsSyringeDetected ? "<color=green>FOUND</color>" : "<color=orange>SEARCHING...</color>")}");
+
+            // Render insertion angle metrics from your standalone estimator script
+            if (angleEstimator != null)
+            {
+                string angleColor = angleEstimator.IsAngleAcceptable ? "green" : "red";
+                string statusText = angleEstimator.IsAngleAcceptable ? "ACCEPTABLE" : "INVALID BOUNDS";
+
+                sb.AppendLine($"Insertion Angle: <b>{angleEstimator.CurrentInsertionAngle:F1}°</b>");
+                sb.AppendLine($"Facilitator Rule: <color={angleColor}><b>{statusText}</b></color>");
+            }
+            else
+            {
+                sb.AppendLine("<color=yellow>Angle Estimator: Script reference unassigned</color>");
+            }
+
             sb.AppendLine("\nNormalized Anchor Keypoints:");
-            
+
             for (int i = 0; i < 4; i++)
             {
                 Vector2 pt = detector.NormalizedKeypoints[i];
-                sb.AppendLine($"  Point {i + 1}: ({pt.x:F3}, {pt.y:F3})");
+                float kptConf = detector.KeypointConfidences[i];
+                // Low per-keypoint confidence doesn't mean "wrong code" - VPIC found this model's
+                // 4th keypoint specifically runs ~0.03-0.05 even on clean detections while 0-2 run
+                // ~0.98-0.99. Colour-coding here so a low number reads as "known model limitation",
+                // not "something broke".
+                string confColor = kptConf >= 0.5f ? "green" : (kptConf >= 0.15f ? "yellow" : "red");
+                sb.AppendLine($"  Point {i + 1}: ({pt.x:F3}, {pt.y:F3})  conf=<color={confColor}>{kptConf:F3}</color>");
             }
         }
 
