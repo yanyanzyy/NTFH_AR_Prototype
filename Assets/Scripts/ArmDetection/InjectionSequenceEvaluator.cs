@@ -54,6 +54,16 @@ namespace ARArmDetection
                  "— a fingertip points nearly flat, so demanding a 15–30° needle angle would keep the " +
                  "finger test from ever succeeding. The angle is still shown as info.")]
         [SerializeField] private bool  _requireAngleInDirectMode = false;
+        [Tooltip("Direct mode: grade the tip against the veins AS SEEN from the headset — the miss " +
+                 "distance is measured perpendicular to the view ray. The locked overlay can sit " +
+                 "several cm off in DEPTH while looking perfectly aligned, so raw 3D distance fails " +
+                 "trainees for a registration error they cannot see; this grades what they actually " +
+                 "aim at. The ignored depth offset is still bounded by the tolerance below.")]
+        [SerializeField] private bool  _gradeFromView = true;
+        [Tooltip("Maximum offset (m) between tip and vein ALONG the view ray for a poke to count. " +
+                 "Covers lock registration depth error + hand-tracking depth error, while still " +
+                 "rejecting a hand that is nowhere near the arm.")]
+        [SerializeField] private float _viewDepthToleranceMeters = 0.12f;
 
         [Header("Arm model")]
         [Tooltip("Physical radius of the mannequin arm at injection sites (forearm ~4.25 cm). " +
@@ -269,7 +279,7 @@ namespace ARArmDetection
 
             if (_armManager == null || !_armManager.IsLocked ||
                 _veinMap == null || !_armManager.TryGetNeedleTip(out var tip) ||
-                !_veinMap.QueryNearestVein(tip, out var vein))
+                !QueryVein(tip, out var vein))
             {
                 if (_attemptActive && TickLossGrace()) return;
                 EndAttemptIfActive("Waiting for needle / vein map");
@@ -281,7 +291,10 @@ namespace ARArmDetection
             VeinDistanceMeters = dist;
 
             // ── Stage 1: at the arm (near a vein path) ──────────────────────────────────
-            bool near = dist <= _directContactMeters;
+            // In view-grading mode `dist` is the LATERAL miss (what the trainee sees) and the
+            // depth offset along the view ray is gated separately — see _gradeFromView.
+            bool depthOk = vein.ViewDepthMeters <= _viewDepthToleranceMeters;
+            bool near = depthOk && dist <= _directContactMeters;
             if (near)
             {
                 _contactLossTimer = 0f;
@@ -290,13 +303,13 @@ namespace ARArmDetection
             else if (_attemptActive)
             {
                 if (TickLossGrace()) return;
-                EndAttemptIfActive($"Approach a vein ({dist * 100f:F1} cm away)");
+                EndAttemptIfActive(ApproachText(dist, vein.ViewDepthMeters, depthOk));
                 return;
             }
             else
             {
                 _contactDwellTimer = 0f;
-                SetStage(Stage.Contact, $"Approach a vein ({dist * 100f:F1} cm away)");
+                SetStage(Stage.Contact, ApproachText(dist, vein.ViewDepthMeters, depthOk));
                 return;
             }
 
@@ -338,6 +351,25 @@ namespace ARArmDetection
             SetStage(Stage.Success, $"SUCCESS — on {vein.Vein.name}{angleNote}");
             OnSuccess?.Invoke();
         }
+
+        /// <summary>Runs the vein query in the configured metric: view-perpendicular (grading
+        /// what the trainee sees) when enabled and a camera exists, else raw 3D.</summary>
+        private bool QueryVein(Vector3 tip, out VeinMap.QueryResult result)
+        {
+            var cam = Camera.main;
+            if (_gradeFromView && cam != null)
+                return _veinMap.QueryNearestVeinFromView(tip, cam.transform.position,
+                                                         _viewDepthToleranceMeters, out result);
+            return _veinMap.QueryNearestVein(tip, out result);
+        }
+
+        /// <summary>Approach guidance incl. a depth hint when the depth gate is the blocker —
+        /// otherwise a tiny lateral cm reads as "basically there" while the stage refuses to
+        /// advance, which looks like a bug.</summary>
+        private static string ApproachText(float lateral, float viewDepth, bool depthOk) =>
+            depthOk
+                ? $"Approach a vein ({lateral * 100f:F1} cm away)"
+                : $"Approach a vein ({lateral * 100f:F1} cm across, {viewDepth * 100f:F0} cm off in depth)";
 
         /// <summary>Counts contact/needle dropout time. Returns true while still within the
         /// grace window (attempt held), false once the grace is exhausted.</summary>

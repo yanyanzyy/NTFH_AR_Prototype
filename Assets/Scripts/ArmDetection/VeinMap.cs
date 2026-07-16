@@ -123,6 +123,67 @@ namespace ARArmDetection
         // ── Public API ────────────────────────────────────────────────────────────────
 
         /// <summary>
+        /// Finds the vein whose PATH passes closest to <paramref name="injectionPoint"/> as SEEN
+        /// from <paramref name="viewOrigin"/> (the headset): the miss distance is measured
+        /// PERPENDICULAR to the view ray, ignoring the component along it. Use this for grading
+        /// pokes — the locked overlay can sit several cm off in DEPTH (registration error along
+        /// the view ray) while looking perfectly aligned, so a trainee who touches the vein they
+        /// SEE would otherwise be failed for an error they cannot perceive or correct. The
+        /// discarded depth offset is still reported (ViewDepthMeters) and bounded by
+        /// <paramref name="depthToleranceMeters"/> so a hand nowhere near the arm cannot score.
+        /// Delta is the IN-PLANE vector to the vein — the direction the trainee actually sees.
+        /// </summary>
+        public bool QueryNearestVeinFromView(Vector3 injectionPoint, Vector3 viewOrigin,
+                                             float depthToleranceMeters, out QueryResult result)
+        {
+            result = default;
+            if (!HasArm || _veins == null || _veins.Count == 0) return false;
+
+            Vector3 viewDir = injectionPoint - viewOrigin;
+            if (viewDir.sqrMagnitude < 1e-6f)
+                return QueryNearestVein(injectionPoint, out result);
+            viewDir.Normalize();
+
+            float    bestLateral = float.MaxValue;
+            VeinZone bestVein    = null;
+            Vector3  bestWorld   = default;
+            Vector3  bestInPlane = default;
+            float    bestDepth   = 0f;
+
+            foreach (var vein in _veins)
+            {
+                if (GetVeinPolyline(vein, _workPoints) == 0) continue;
+
+                ClosestPointOnPolylineFromView(injectionPoint, viewDir, _workPoints,
+                                               out Vector3 world, out Vector3 inPlane,
+                                               out float lateral, out float depth);
+                if (lateral < bestLateral)
+                {
+                    bestLateral = lateral;
+                    bestVein    = vein;
+                    bestWorld   = world;
+                    bestInPlane = inPlane;
+                    bestDepth   = depth;
+                }
+            }
+
+            if (bestVein == null) return false;
+
+            result = new QueryResult
+            {
+                Vein            = bestVein,
+                VeinWorldPos    = bestWorld,
+                InjectionPoint  = injectionPoint,
+                Delta           = bestInPlane - injectionPoint,   // in-plane: what the trainee sees
+                DistanceMeters  = bestLateral,
+                ViewDepthMeters = bestDepth,
+                IsOnVein        = bestLateral <= bestVein.hitRadiusMeters &&
+                                  bestDepth   <= depthToleranceMeters,
+            };
+            return true;
+        }
+
+        /// <summary>
         /// Finds the vein whose PATH passes closest to <paramref name="injectionPoint"/>.
         /// Returns false when the arm isn't locked or no veins are defined.
         /// </summary>
@@ -238,6 +299,51 @@ namespace ARArmDetection
             return false;
         }
 
+        /// <summary>
+        /// Closest approach of a polyline to <paramref name="point"/> measured in the plane
+        /// perpendicular to <paramref name="viewDir"/> (i.e. ignoring depth along the view ray).
+        /// Outputs the point ON the original polyline (for arrows/markers), its flattened
+        /// in-plane counterpart, the lateral distance, and the |depth| offset along the ray.
+        /// </summary>
+        private static void ClosestPointOnPolylineFromView(Vector3 point, Vector3 viewDir,
+                                                           List<Vector3> polyline,
+                                                           out Vector3 worldPoint,
+                                                           out Vector3 inPlanePoint,
+                                                           out float lateralDist,
+                                                           out float viewDepth)
+        {
+            // Projects x onto the plane through `point` perpendicular to viewDir.
+            Vector3 Flatten(Vector3 x) => x - viewDir * Vector3.Dot(x - point, viewDir);
+
+            Vector3 bestWorld   = polyline[0];
+            Vector3 bestInPlane = Flatten(polyline[0]);
+            float   bestSqr     = (bestInPlane - point).sqrMagnitude;
+
+            for (int i = 0; i < polyline.Count - 1; i++)
+            {
+                Vector3 aF = Flatten(polyline[i]);
+                Vector3 bF = Flatten(polyline[i + 1]);
+                Vector3 ab = bF - aF;
+                float lenSqr = ab.sqrMagnitude;
+                float t = lenSqr < 1e-8f ? 0f
+                        : Mathf.Clamp01(Vector3.Dot(point - aF, ab) / lenSqr);
+
+                Vector3 candInPlane = aF + ab * t;
+                float sqr = (candInPlane - point).sqrMagnitude;
+                if (sqr < bestSqr)
+                {
+                    bestSqr     = sqr;
+                    bestInPlane = candInPlane;
+                    bestWorld   = Vector3.Lerp(polyline[i], polyline[i + 1], t);
+                }
+            }
+
+            worldPoint   = bestWorld;
+            inPlanePoint = bestInPlane;
+            lateralDist  = Mathf.Sqrt(bestSqr);
+            viewDepth    = Mathf.Abs(Vector3.Dot(bestWorld - point, viewDir));
+        }
+
         private static Vector3 ClosestPointOnPolyline(Vector3 point, List<Vector3> polyline)
         {
             if (polyline.Count == 1) return polyline[0];
@@ -297,9 +403,16 @@ namespace ARArmDetection
             /// <summary>Closest point ON the vein path to the injection point (world space).</summary>
             public Vector3  VeinWorldPos;
             public Vector3  InjectionPoint;
-            /// <summary>Vector from injection point to the closest point on the vein (world space).</summary>
+            /// <summary>Vector from injection point to the closest point on the vein (world space).
+            /// From <see cref="QueryNearestVeinFromView"/> this is the IN-PLANE (view-perpendicular)
+            /// vector — the correction direction as the trainee sees it.</summary>
             public Vector3  Delta;
+            /// <summary>Miss distance (m). From <see cref="QueryNearestVeinFromView"/> this is the
+            /// LATERAL distance perpendicular to the view ray; from the plain query it is raw 3D.</summary>
             public float    DistanceMeters;
+            /// <summary>Offset (m) between tip and vein ALONG the view ray — the registration/depth
+            /// error the trainee cannot see. Always 0 from the plain 3D query.</summary>
+            public float    ViewDepthMeters;
             public bool     IsOnVein;
         }
     }

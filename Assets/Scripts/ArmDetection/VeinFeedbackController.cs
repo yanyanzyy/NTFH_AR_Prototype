@@ -55,6 +55,14 @@ namespace ARArmDetection
                  "attempt (drives the wrong-streak / answer-key reveal). A vein's own hitRadius decides " +
                  "CORRECT vs WRONG within that.")]
         [SerializeField] private float _pokeWithinMeters = 0.045f;
+        [Tooltip("Direct mode: measure the miss distance perpendicular to the headset's view ray " +
+                 "(grade what the trainee SEES). The locked overlay can sit several cm off in depth " +
+                 "while looking aligned — raw 3D distance then reports 'wrong spot' on a visually " +
+                 "perfect touch. Keep identical to InjectionSequenceEvaluator's setting.")]
+        [SerializeField] private bool  _gradeFromView = true;
+        [Tooltip("Maximum tip↔vein offset (m) ALONG the view ray for a poke to count. Covers lock " +
+                 "registration + hand-tracking depth error.")]
+        [SerializeField] private float _viewDepthToleranceMeters = 0.12f;
 
         [Header("Wrong-poke guidance")]
         [Tooltip("Consecutive wrong-spot pokes before the overlay answer key is revealed.")]
@@ -109,14 +117,18 @@ namespace ARArmDetection
         {
             if (!_armManager.IsLocked ||
                 !_armManager.TryGetNeedleTip(out var tip) ||
-                !_veinMap.QueryNearestVein(tip, out var query))
+                !QueryVein(tip, out var query))
             {
                 CoastOrHide();
                 return;
             }
 
-            bool poking = query.DistanceMeters <= _pokeWithinMeters;
-            bool near   = query.DistanceMeters <= _showWithinMeters;
+            // View grading: DistanceMeters is the LATERAL miss; the unseen depth offset gates
+            // separately (looser for merely showing guidance than for counting a poke).
+            bool depthOk = query.ViewDepthMeters <= _viewDepthToleranceMeters;
+            bool poking = depthOk && query.DistanceMeters <= _pokeWithinMeters;
+            bool near   = query.DistanceMeters <= _showWithinMeters &&
+                          query.ViewDepthMeters <= _viewDepthToleranceMeters * 2f;
 
             if (poking)
             {
@@ -152,6 +164,17 @@ namespace ARArmDetection
             }
 
             _feedbackUI.Hide();
+        }
+
+        /// <summary>Runs the vein query in the configured metric: view-perpendicular (grading what
+        /// the trainee sees) when enabled and a camera exists, else raw 3D.</summary>
+        private bool QueryVein(Vector3 tip, out VeinMap.QueryResult result)
+        {
+            var cam = Camera.main;
+            if (_gradeFromView && cam != null)
+                return _veinMap.QueryNearestVeinFromView(tip, cam.transform.position,
+                                                         _viewDepthToleranceMeters, out result);
+            return _veinMap.QueryNearestVein(tip, out result);
         }
 
         /// <summary>Finalises an active poke after the grace window, else hides the panel. Used when

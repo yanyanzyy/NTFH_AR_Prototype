@@ -5,7 +5,9 @@ namespace ARArmDetection
     /// <summary>
     /// Test rig: uses a tracked FINGERTIP (or a pen held in a pinch) as the syringe needle,
     /// so the whole vein/injection pipeline can be exercised without the unreliable syringe
-    /// vision model. Each frame the chosen fingertip (plus an optional pen-tip extension) is
+    /// vision model. BOTH hands are tracked; each frame the fingertip closer to the locked
+    /// arm (i.e. the hand actually poking) is chosen, so the rig works no matter which hand
+    /// the trainee uses. The tip (plus an optional pen-tip extension) is
     /// pushed into <see cref="ArmDetectionManager.SetSimulatedNeedle"/>; from there it flows
     /// through the manager's single TryGetNeedle/TryGetNeedleTip API, so InjectionSiteDetector,
     /// VeinFeedbackController/UI, InjectionSequenceEvaluator, NeedleAngleEstimator and the
@@ -29,8 +31,10 @@ namespace ARArmDetection
         [Header("References")]
         [Tooltip("Manager receiving the simulated needle pose. Auto-found when left empty.")]
         [SerializeField] private ArmDetectionManager _manager;
-        [Tooltip("OVRSkeleton of the hand acting as the syringe (normally the RIGHT hand). " +
-                 "Auto-found when left empty (prefers a right-hand skeleton).")]
+        [Tooltip("PRIMARY hand skeleton (auto-found when empty, preferring the right hand). The " +
+                 "OTHER hand is ALSO tracked automatically, and whichever tracked fingertip is " +
+                 "closer to the locked arm feeds the needle — so poking with either hand just " +
+                 "works, instead of silently grading the idle hand's position.")]
         [SerializeField] private OVRSkeleton _handSkeleton;
 
         [Header("Simulated needle")]
@@ -54,16 +58,27 @@ namespace ARArmDetection
         /// <summary>Human-readable state for HUDs ("Feeding (Index)", "Waiting for hand", …).</summary>
         public string Status { get; private set; } = "Idle";
 
-        private Transform _tipBone;
-        private Transform _distalBone;
-        private OVRSkeleton _resolvedSkeleton;
-        private Finger _resolvedFinger;
+        /// <summary>Per-hand bone cache. Two of these exist so BOTH hands can act as the
+        /// needle; the poking hand is picked each frame by proximity to the locked arm.</summary>
+        private sealed class HandRig
+        {
+            public OVRSkeleton Skeleton;
+            public Transform   Tip;
+            public Transform   Distal;
+            public OVRSkeleton ResolvedSkeleton;
+            public Finger      ResolvedFinger;
+        }
+
+        private readonly HandRig _primaryRig = new HandRig();
+        private readonly HandRig _otherRig   = new HandRig();
+        private bool _scannedForHands;
         private LineRenderer _markerLine;
 
         private void OnEnable()
         {
-            _tipBone = null;
-            _distalBone = null;
+            _primaryRig.Tip = _primaryRig.Distal = null;
+            _otherRig.Tip   = _otherRig.Distal   = null;
+            _scannedForHands = false;
         }
 
         private void OnDisable()
@@ -81,7 +96,8 @@ namespace ARArmDetection
                 return;
             }
 
-            if (!TryResolveBones())
+            HandRig rig = PickActiveRig();
+            if (rig == null)
             {
                 Status = "Waiting for hand tracking";
                 _manager.ClearSimulatedNeedle();
@@ -89,8 +105,8 @@ namespace ARArmDetection
                 return;
             }
 
-            Vector3 tipPos = _tipBone.position;
-            Vector3 dir = tipPos - _distalBone.position;
+            Vector3 tipPos = rig.Tip.position;
+            Vector3 dir = tipPos - rig.Distal.position;
             if (dir.sqrMagnitude < 1e-8f)
             {
                 Status = "Degenerate finger pose";
@@ -102,7 +118,7 @@ namespace ARArmDetection
             Vector3 needleHub = needleTip - dir * _hubBackDistanceMeters;
 
             _manager.SetSimulatedNeedle(needleTip, needleHub);
-            Status = $"Feeding ({_finger}{(_penTipOffsetMeters > 0.001f ? " + pen" : "")})";
+            Status = $"Feeding ({SideLabel(rig)} {_finger}{(_penTipOffsetMeters > 0.001f ? " + pen" : "")})";
 
             UpdateMarkerLine(needleHub, needleTip);
         }
@@ -117,14 +133,74 @@ namespace ARArmDetection
                 if (_manager == null) { Status = "No ArmDetectionManager"; return false; }
             }
 
-            if (_handSkeleton == null)
+            if (!_scannedForHands)
             {
-                _handSkeleton = FindHandSkeleton(preferRight: true);
-                if (_handSkeleton == null) { Status = "No OVRSkeleton hand found"; return false; }
-                Debug.Log($"[SimulatedNeedle] Auto-assigned hand skeleton '{_handSkeleton.name}' " +
-                          $"({_handSkeleton.GetSkeletonType()}).");
+                // Primary = the explicitly wired skeleton (or the right hand); the OTHER hand is
+                // picked up as well so a trainee poking with either hand feeds the needle.
+                _primaryRig.Skeleton = _handSkeleton != null ? _handSkeleton
+                                                             : FindHandSkeleton(preferRight: true);
+                _otherRig.Skeleton = FindOtherHandSkeleton(_primaryRig.Skeleton);
+
+                if (_primaryRig.Skeleton == null && _otherRig.Skeleton == null)
+                {
+                    Status = "No OVRSkeleton hand found";
+                    return false;   // _scannedForHands stays false → rescan next frame
+                }
+
+                _scannedForHands = true;
+                Debug.Log($"[SimulatedNeedle] Hands: primary=" +
+                          $"{(_primaryRig.Skeleton != null ? _primaryRig.Skeleton.GetSkeletonType().ToString() : "none")}, " +
+                          $"other={(_otherRig.Skeleton != null ? _otherRig.Skeleton.GetSkeletonType().ToString() : "none")}.");
             }
             return true;
+        }
+
+        /// <summary>
+        /// Picks which tracked hand feeds the needle this frame: the one whose fingertip is
+        /// closer to the locked arm (i.e. the hand actually poking). Falls back to whichever
+        /// single hand is tracked, then to the primary when no arm lock exists to compare against.
+        /// </summary>
+        private HandRig PickActiveRig()
+        {
+            bool primaryReady = ResolveRig(_primaryRig) && _primaryRig.Skeleton.IsDataValid;
+            bool otherReady   = ResolveRig(_otherRig)   && _otherRig.Skeleton.IsDataValid;
+
+            if (primaryReady && otherReady)
+            {
+                if (_manager.TryGetArmEndpoints(out var s, out var w))
+                {
+                    Vector3 mid = (s + w) * 0.5f;
+                    return (mid - _primaryRig.Tip.position).sqrMagnitude
+                        <= (mid - _otherRig.Tip.position).sqrMagnitude ? _primaryRig : _otherRig;
+                }
+                return _primaryRig;
+            }
+            if (primaryReady) return _primaryRig;
+            if (otherReady) return _otherRig;
+            return null;
+        }
+
+        private static string SideLabel(HandRig rig)
+        {
+            var t = rig.Skeleton.GetSkeletonType();
+            bool right = t == OVRSkeleton.SkeletonType.HandRight ||
+                         t == OVRSkeleton.SkeletonType.XRHandRight;
+            return right ? "R" : "L";
+        }
+
+        private static OVRSkeleton FindOtherHandSkeleton(OVRSkeleton primary)
+        {
+            foreach (var skel in FindObjectsByType<OVRSkeleton>(FindObjectsSortMode.None))
+            {
+                if (skel == primary) continue;
+                var t = skel.GetSkeletonType();
+                bool isHand = t == OVRSkeleton.SkeletonType.HandRight ||
+                              t == OVRSkeleton.SkeletonType.XRHandRight ||
+                              t == OVRSkeleton.SkeletonType.HandLeft ||
+                              t == OVRSkeleton.SkeletonType.XRHandLeft;
+                if (isHand) return skel;
+            }
+            return null;
         }
 
         private static OVRSkeleton FindHandSkeleton(bool preferRight)
@@ -145,38 +221,40 @@ namespace ARArmDetection
         }
 
         /// <summary>
-        /// Resolves the tip + distal-phalanx bones for the configured finger, branching on the
-        /// skeleton type (legacy Hand_* ids vs OpenXR XRHand_* ids share integer values but mean
-        /// DIFFERENT bones). Re-resolves when the skeleton or finger selection changes.
+        /// Resolves the tip + distal-phalanx bones of the configured finger for ONE hand rig,
+        /// branching on the skeleton type (legacy Hand_* ids vs OpenXR XRHand_* ids share
+        /// integer values but mean DIFFERENT bones). Re-resolves when the skeleton or finger
+        /// selection changes.
         /// </summary>
-        private bool TryResolveBones()
+        private bool ResolveRig(HandRig rig)
         {
-            if (_tipBone != null && _distalBone != null &&
-                _resolvedSkeleton == _handSkeleton && _resolvedFinger == _finger)
+            if (rig.Skeleton == null) return false;
+            if (rig.Tip != null && rig.Distal != null &&
+                rig.ResolvedSkeleton == rig.Skeleton && rig.ResolvedFinger == _finger)
                 return true;
 
-            _tipBone = null;
-            _distalBone = null;
-            if (_handSkeleton == null || !_handSkeleton.IsInitialized ||
-                _handSkeleton.Bones == null || _handSkeleton.Bones.Count == 0)
+            rig.Tip = null;
+            rig.Distal = null;
+            if (!rig.Skeleton.IsInitialized ||
+                rig.Skeleton.Bones == null || rig.Skeleton.Bones.Count == 0)
                 return false;
 
-            GetFingerBoneIds(_handSkeleton.GetSkeletonType(), _finger,
+            GetFingerBoneIds(rig.Skeleton.GetSkeletonType(), _finger,
                              out var tipId, out var distalId);
 
-            foreach (var bone in _handSkeleton.Bones)
+            foreach (var bone in rig.Skeleton.Bones)
             {
                 if (bone == null || bone.Transform == null) continue;
-                if (bone.Id == tipId) _tipBone = bone.Transform;
-                else if (bone.Id == distalId) _distalBone = bone.Transform;
+                if (bone.Id == tipId) rig.Tip = bone.Transform;
+                else if (bone.Id == distalId) rig.Distal = bone.Transform;
             }
 
-            if (_tipBone == null || _distalBone == null) return false;
+            if (rig.Tip == null || rig.Distal == null) return false;
 
-            _resolvedSkeleton = _handSkeleton;
-            _resolvedFinger = _finger;
+            rig.ResolvedSkeleton = rig.Skeleton;
+            rig.ResolvedFinger = _finger;
             Debug.Log($"[SimulatedNeedle] Resolved {_finger} bones on " +
-                      $"{_handSkeleton.GetSkeletonType()} (tip={tipId}, distal={distalId}).");
+                      $"{rig.Skeleton.GetSkeletonType()} (tip={tipId}, distal={distalId}).");
             return true;
         }
 
