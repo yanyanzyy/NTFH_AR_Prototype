@@ -8,8 +8,17 @@ namespace ARArmDetection
     /// When a 3D model prefab is assigned it is used as the overlay; otherwise
     /// the component falls back to a simple coloured quad (useful for debugging).
     ///
-    /// 3D MODEL SETUP
-    /// --------------
+    /// 3D MODEL SETUP — PREFERRED: keypoint anchors
+    /// --------------------------------------------
+    /// Add two empty child GameObjects inside the arm prefab, placed ON the mesh
+    /// where the detector's two keypoints correspond:
+    ///   "OverlayAnchor_Proximal" — at the elbow crease / insertion zone
+    ///   "OverlayAnchor_Distal"   — at the wrist
+    /// When both exist, the model is positioned, rotated and scaled every frame so
+    /// these two marked points land EXACTLY on the two detected world points. The
+    /// axis / pivot / natural-length fields below are then ignored.
+    ///
+    /// FALLBACK (no anchors in the prefab): axis + pivot + length fit
     /// 1. Assign your arm prefab (e.g. "3dScanArm") to _armModelPrefab.
     /// 2. Set _modelArmAxis to the local axis of the prefab that points from
     ///    the shoulder end toward the wrist end (default: Vector3.forward / +Z).
@@ -35,6 +44,16 @@ namespace ARArmDetection
         [Header("3D Model (optional)")]
         [Tooltip("Prefab to use as the arm overlay. If unassigned, falls back to the debug quad.")]
         [SerializeField] private GameObject _armModelPrefab;
+
+        [Tooltip("Name of an empty child transform inside the prefab marking where the PROXIMAL " +
+                 "keypoint (near-elbow / insertion zone) sits ON the model mesh. When both anchors " +
+                 "exist the model is posed so the marked points land exactly on the two detected " +
+                 "keypoints, and the axis/pivot/length fields below are ignored.")]
+        [SerializeField] private string _proximalAnchorName = "OverlayAnchor_Proximal";
+
+        [Tooltip("Name of an empty child transform inside the prefab marking where the DISTAL " +
+                 "keypoint (wrist) sits ON the model mesh.")]
+        [SerializeField] private string _distalAnchorName = "OverlayAnchor_Distal";
 
         [Tooltip("Which local axis of the prefab points from the shoulder end toward the wrist end.")]
         [SerializeField] private Vector3 _modelArmAxis = Vector3.forward;
@@ -104,6 +123,14 @@ namespace ARArmDetection
         private Transform _quad;
         private Material  _quadMaterial;
         private float     _nextShortArmWarning;
+        private bool      _warnedZeroAxis;
+
+        // Keypoint anchors: local positions (in model-root space) of the two prefab-authored
+        // marker children. Cached at Awake — they are rigid children, so the root-local offset
+        // never changes regardless of how the root itself is moved/rotated/scaled.
+        private bool    _hasAnchors;
+        private Vector3 _proximalLocal;
+        private Vector3 _distalLocal;
 
         // ── Unity lifecycle ────────────────────────────────────────────────────────────
 
@@ -119,6 +146,29 @@ namespace ARArmDetection
                 // Cached so the mesh can be hidden (answer-key mode) without deactivating the
                 // GameObject — the transforms must keep updating so VeinMap's paths stay aligned.
                 _modelRenderers = modelGo.GetComponentsInChildren<Renderer>(true);
+
+                // Keypoint anchors: two empties authored in the prefab marking where the
+                // detector's keypoints sit ON the mesh. Their root-local positions are fixed,
+                // so capture them once here (InverseTransformPoint is independent of the
+                // root's own world pose for rigid children).
+                Transform proximal = FindDeepChild(_model, _proximalAnchorName);
+                Transform distal   = FindDeepChild(_model, _distalAnchorName);
+                if (proximal != null && distal != null)
+                {
+                    _proximalLocal = _model.InverseTransformPoint(proximal.position);
+                    _distalLocal   = _model.InverseTransformPoint(distal.position);
+                    _hasAnchors    = (_distalLocal - _proximalLocal).sqrMagnitude > 1e-6f;
+                    Debug.Log(_hasAnchors
+                        ? $"[ArmOverlay] Keypoint anchors found — exact anchor placement enabled " +
+                          $"(model-space span {(_distalLocal - _proximalLocal).magnitude:F3})."
+                        : "[ArmOverlay] Keypoint anchors found but coincide — falling back to axis fit.");
+                }
+                else
+                {
+                    Debug.Log($"[ArmOverlay] No keypoint anchors ('{_proximalAnchorName}'/'{_distalAnchorName}') " +
+                              "in the prefab — using axis+pivot+length fit. Add the two marker empties " +
+                              "to the prefab for exact keypoint placement.");
+                }
             }
 
             // Debug quad (always created; hidden unless needed)
@@ -203,7 +253,47 @@ namespace ARArmDetection
 
         private void PlaceModel(Vector3 shoulder, Vector3 wrist, Vector3 armDir, float length)
         {
+            // PREFERRED: exact anchor placement. Solve the similarity transform (rotation +
+            // uniform scale + translation) that puts the prefab's proximal marker on the
+            // detected proximal point and its distal marker on the detected distal point.
+            // No axis/pivot/length guessing — the marked points ARE the keypoints.
+            if (_hasAnchors)
+            {
+                Vector3 vLocal = _distalLocal - _proximalLocal;
+                float vLen = vLocal.magnitude;
+
+                float s = _scaleToFitDetectedLength ? length / vLen : 1f;
+                Quaternion anchorRot = Quaternion.FromToRotation(vLocal / vLen, armDir);
+                // Place so worldPos(proximalLocal) = pos + anchorRot * (s * proximalLocal) = shoulder;
+                // the distal marker then lands on the wrist point by construction.
+                Vector3 anchoredPos = shoulder - anchorRot * (_proximalLocal * s);
+
+                if (Mathf.Abs(_lateralOffset) > 1e-6f)
+                {
+                    Vector3 latDir = Vector3.Cross(Vector3.up, armDir);
+                    if (latDir.sqrMagnitude < 1e-6f) latDir = Vector3.Cross(Vector3.forward, armDir);
+                    anchoredPos += latDir.normalized * _lateralOffset;
+                }
+
+                if (!_model.gameObject.activeSelf)
+                    Debug.Log($"[ArmOverlay] 3D model activated (anchors) — scale={s:F2} len={length:F2}m");
+
+                _model.SetPositionAndRotation(anchoredPos, anchorRot);
+                _model.localScale = Vector3.one * s;
+                _model.gameObject.SetActive(true);
+                ApplyModelRenderers(IsModelRevealed);
+                return;
+            }
+
+            // FALLBACK: axis + pivot + length fit.
             // Compute the world rotation that takes _modelArmAxis onto armDir.
+            if (_modelArmAxis.sqrMagnitude <= 1e-6f && !_warnedZeroAxis)
+            {
+                _warnedZeroAxis = true;
+                Debug.LogWarning("[ArmOverlay] _modelArmAxis is ZERO — falling back to +Z. If the " +
+                                 "overlay lies sideways across the arm, set the prefab's real long " +
+                                 "axis (this scan's long axis is +X) or add keypoint anchors.");
+            }
             Vector3 axis = _modelArmAxis.sqrMagnitude > 1e-6f
                 ? _modelArmAxis.normalized
                 : Vector3.forward;
@@ -271,6 +361,13 @@ namespace ARArmDetection
                 Debug.Log($"[ArmOverlay] Quad activated — mid={mid} len={length:F2}m");
 
             _quad.gameObject.SetActive(true);
+        }
+
+        private static Transform FindDeepChild(Transform root, string name)
+        {
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                if (t.name == name) return t;
+            return null;
         }
 
         private void SetVisible(bool visible)

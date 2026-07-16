@@ -2741,7 +2741,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!114 &1511012891
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2755,7 +2755,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmOverlay
   _armModelPrefab: {fileID: 8823628010819527810, guid: f13ebf698b27c134ab32dd3454f773c7, type: 3}
-  _modelArmAxis: {x: 75, y: -2, z: -275}
+  _proximalAnchorName: OverlayAnchor_Proximal
+  _distalAnchorName: OverlayAnchor_Distal
+  _modelArmAxis: {x: 1, y: 0, z: 0}
   _naturalArmLengthMeters: 1.2
   _scaleToFitDetectedLength: 1
   _pivotOffset: 0.4
@@ -3602,6 +3604,7 @@ MonoBehaviour:
   _armOnlyImageSmoothing: 0.8
   _armOnlyWorldSmoothing: 0.9
   _customDetectorEveryNFrames: 1
+  _disableTargetLock: 1
   _acquireConsistentFrames: 2
   _acquireRadiusMeters: 0.3
   _acquireMinConfidence: 0.4
@@ -3617,11 +3620,13 @@ MonoBehaviour:
   _maxRefineSeconds: 12
   _suspendDetectionWhileFrozen: 1
   _anchorFrozenArm: 1
+  _useKeypointAxis: 1
+  _swapKeypointAxisEndpoints: 0
   _useDepthAxisEstimation: 0
   _depthSampleGrid: 6
   _swapDepthAxisEndpoints: 1
   _normalizeDepthAxisLength: 1
-  _useFixedWorldAxis: 1
+  _useFixedWorldAxis: 0
   _fixedArmYawDegrees: 0
   _fixedArmLengthMeters: 0.55
   _stabilizeFixedAxisDepth: 1
@@ -3629,7 +3634,7 @@ MonoBehaviour:
   _swapFixedAxisEndpoints: 0
   _fixedAxisDepthOffsetMeters: 0
   _gcSweepIntervalSeconds: 30
-  _debugHUD: {fileID: 0}
+  _debugHUD: {fileID: 1142564977}
   _bypassWearerFilter: 1
 --- !u!4 &2062675445
 Transform:

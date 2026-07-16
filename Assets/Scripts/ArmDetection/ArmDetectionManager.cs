@@ -149,6 +149,17 @@ namespace ARArmDetection
                  "if anchors are unsupported or not yet localised.")]
         [SerializeField] private bool _anchorFrozenArm = true;
 
+        [Header("Keypoint-driven axis (uses the model's two keypoints directly)")]
+        [Tooltip("Place the overlay directly on the model's TWO keypoints (proximal/near-elbow and " +
+                 "distal/wrist) instead of the box depth-PCA or the hard-coded fixed axis. Each keypoint's " +
+                 "image ray is cast against real-world depth so the endpoints land on the PHYSICAL arm " +
+                 "surface (falls back to the estimated depth for any keypoint the Depth API can't sense). " +
+                 "Takes priority over both axis modes below when on. NOTE: only as good as the keypoints " +
+                 "themselves — if the model's keypoint head is untrained the overlay will wander with them.")]
+        [SerializeField] private bool _useKeypointAxis = true;
+        [Tooltip("Flip which keypoint is treated as shoulder vs wrist end of the overlay.")]
+        [SerializeField] private bool _swapKeypointAxisEndpoints = false;
+
         [Header("Depth-based arm axis (bypasses keypoint regression)")]
         [Tooltip("When a depth raycaster is available, estimate the arm's 3D axis by sampling a grid " +
                  "of points across the detected box and raycasting them against real-world depth, then " +
@@ -1080,7 +1091,32 @@ namespace ARArmDetection
             filterPassCount++;
 
             Vector3 shoulderWorld, wristWorld;
-            if (TryEstimateArmAxisFromDepth(p.ImageBounds, out var axisEndA, out var axisEndB))
+            if (_useKeypointAxis)
+            {
+                // Drive the overlay straight from the model's two keypoints. Cast each keypoint's
+                // image ray against real-world depth so the endpoints seat on the PHYSICAL arm
+                // surface rather than a guessed depth plane.
+                Vector3 proximalWorld = ProjectImagePoint(arm.ShoulderImage, depthHeuristic, out bool proxHit);
+                Vector3 distalWorld   = ProjectImagePoint(arm.WristImage,    depthHeuristic, out bool distHit);
+
+                // If only ONE keypoint found real depth, place the other at that same camera
+                // distance so the segment stays coherent on the arm instead of tilting off to
+                // the heuristic plane. (When both miss, both already share depthHeuristic.)
+                if (proxHit ^ distHit)
+                {
+                    Vector3 camPos = _cameraSource.CameraPose.position;
+                    float hitDepth = Vector3.Distance(camPos, proxHit ? proximalWorld : distalWorld);
+                    if (proxHit) distalWorld   = _cameraSource.ImagePointToWorld(arm.WristImage,    hitDepth);
+                    else         proximalWorld = _cameraSource.ImagePointToWorld(arm.ShoulderImage, hitDepth);
+                }
+                if (proxHit || distHit) depthRaycastHits++;
+
+                shoulderWorld = _swapKeypointAxisEndpoints ? distalWorld : proximalWorld;
+                wristWorld    = _swapKeypointAxisEndpoints ? proximalWorld : distalWorld;
+                DepthAxisStatus = $"Keypoint-axis: proximal={(proxHit ? "depth" : "est")}, " +
+                                  $"distal={(distHit ? "depth" : "est")}";
+            }
+            else if (TryEstimateArmAxisFromDepth(p.ImageBounds, out var axisEndA, out var axisEndB))
             {
                 shoulderWorld = axisEndA;
                 wristWorld = axisEndB;
