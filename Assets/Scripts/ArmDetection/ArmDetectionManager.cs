@@ -579,12 +579,15 @@ namespace ARArmDetection
             bool renderOverlay = false;
             if (_disableTargetLock)
             {
-                // TEMPORARY DEBUG: locking disabled. Render the best live detection straight
-                // from the model each frame with no acquire / lock / freeze / gate, so the
-                // overlay tracks the arm freely as the user moves to different angles and
-                // positions. World endpoints are the raw per-frame estimate (no smoothing), so
-                // expect the overlay to jitter — that is the model's live output.
+                // TEMPORARY DEBUG: locking disabled. Render the best live detection each frame
+                // with no acquire / lock / freeze / gate, so the overlay tracks the arm freely
+                // at any angle and position. The endpoints still get the normal image/world
+                // smoothing (StabilizeArmOnlyCandidate) — without it the raw per-frame keypoint
+                // and depth jitter makes the overlay visibly pulse and re-scale every inference.
+                // RawDetections stays untouched, so the bounding-box debug remains the model's
+                // raw output.
                 _lockState = LockState.Searching;
+                if (found) StabilizeArmOnlyCandidate(ref best, selectedSide, selectedIdx);
                 renderOverlay = found;
                 LockStatus = found ? "Live (lock disabled)" : "Searching (lock disabled)";
             }
@@ -1175,7 +1178,11 @@ namespace ARArmDetection
             // Keep endpoint order consistent with the tracked arm: the depth-axis PCA has a
             // sign ambiguity, so its min/max endpoints can swap between frames and flip the
             // model 180°. Align each candidate with the previous smoothed direction instead.
-            if (_hasSmoothedArmWorld &&
+            // The KEYPOINT axis is exempt: its endpoint order is SEMANTIC — the detector
+            // says which end is proximal vs distal — so forcing it to match history would
+            // permanently freeze a wrong initial orientation (the overlay could never flip
+            // to correct itself when the arm is viewed from the other side).
+            if (!_useKeypointAxis && _hasSmoothedArmWorld &&
                 Vector3.Dot(wristWorld - shoulderWorld, _smoothedWristWorld - _smoothedShoulderWorld) < 0f)
             {
                 (shoulderWorld, wristWorld) = (wristWorld, shoulderWorld);
@@ -1227,6 +1234,18 @@ namespace ARArmDetection
 
         private void StabilizeArmOnlyCandidate(ref ArmCandidate best, Side selectedSide, int selectedIdx)
         {
+            // A ~180° direction reversal is a deliberate endpoint flip (keypoint-axis mode
+            // trusts the detector's proximal/distal order), not jitter. Lerping through it
+            // would drag both endpoints through a collapsed midpoint — the model would
+            // shrink/spin for several frames — so drop the smoothing state and snap.
+            if (_hasSmoothedArmWorld &&
+                Vector3.Dot(best.Wrist - best.Shoulder,
+                            _smoothedWristWorld - _smoothedShoulderWorld) < 0f)
+            {
+                _hasStableArmImage = false;
+                _hasSmoothedArmWorld = false;
+            }
+
             Vector2 midpoint = (best.ShoulderImage + best.WristImage) * 0.5f;
             float imageT = 1f - _armOnlyImageSmoothing;
 

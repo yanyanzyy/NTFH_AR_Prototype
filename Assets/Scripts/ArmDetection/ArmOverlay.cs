@@ -66,6 +66,12 @@ namespace ARArmDetection
                  "Disable this if your depth estimate is too noisy and you prefer a fixed-size model.")]
         [SerializeField] private bool _scaleToFitDetectedLength = true;
 
+        [Tooltip("Uniform scale applied when Scale To Fit is OFF. The physical arm doesn't change " +
+                 "size, so a fixed scale is the most stable choice: set it to " +
+                 "(measured physical elbow-crease→wrist distance in metres) ÷ (anchor span logged at " +
+                 "startup). 1 = the prefab's authored size.")]
+        [SerializeField, Range(0.1f, 3f)] private float _fixedModelScale = 1f;
+
         [Tooltip("Where the prefab's pivot sits along the arm:\n" +
                  "  0.0 = shoulder end\n  0.5 = midpoint (default)\n  1.0 = wrist end")]
         [SerializeField, Range(0f, 1f)] private float _pivotOffset = 0.5f;
@@ -262,7 +268,7 @@ namespace ARArmDetection
                 Vector3 vLocal = _distalLocal - _proximalLocal;
                 float vLen = vLocal.magnitude;
 
-                float s = _scaleToFitDetectedLength ? length / vLen : 1f;
+                float s = _scaleToFitDetectedLength ? length / vLen : _fixedModelScale;
                 Quaternion anchorRot = Quaternion.FromToRotation(vLocal / vLen, armDir);
                 // Place so worldPos(proximalLocal) = pos + anchorRot * (s * proximalLocal) = shoulder;
                 // the distal marker then lands on the wrist point by construction.
@@ -315,7 +321,7 @@ namespace ARArmDetection
             }
 
             // Uniform scale so the model's length matches the detected arm.
-            Vector3 scale = Vector3.one;
+            Vector3 scale = Vector3.one * _fixedModelScale;
             if (_scaleToFitDetectedLength && _naturalArmLengthMeters > 0.001f)
             {
                 float s = length / _naturalArmLengthMeters;

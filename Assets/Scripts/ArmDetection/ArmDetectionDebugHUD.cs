@@ -195,7 +195,7 @@ namespace ARArmDetection
             canvasGO.AddComponent<GraphicRaycaster>();
 
             var rt = canvasGO.GetComponent<RectTransform>();
-            rt.sizeDelta      = new Vector2(640, 400);
+            rt.sizeDelta      = new Vector2(640, 500);
             rt.localPosition  = Vector3.zero;
             rt.localRotation  = Quaternion.identity;
             rt.localScale     = Vector3.one * 0.003f; // 3 mm per canvas unit → ~1.2 m wide
@@ -220,6 +220,9 @@ namespace ARArmDetection
             _label.fontSize  = 18;
             _label.color     = Color.white;
             _label.supportRichText = true;
+            // Default is Truncate, which SILENTLY drops rows that don't fit the rect —
+            // diagnostic lines must never vanish, so overflow past the panel instead.
+            _label.verticalOverflow = VerticalWrapMode.Overflow;
             var txtRT = textGO.GetComponent<RectTransform>();
             txtRT.anchorMin = Vector2.zero;
             txtRT.anchorMax = Vector2.one;

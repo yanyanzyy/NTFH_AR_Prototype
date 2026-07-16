@@ -2084,7 +2084,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!4 &1142564976
 Transform:
   m_ObjectHideFlags: 0
@@ -2759,7 +2759,8 @@ MonoBehaviour:
   _distalAnchorName: OverlayAnchor_Distal
   _modelArmAxis: {x: 1, y: 0, z: 0}
   _naturalArmLengthMeters: 1.2
-  _scaleToFitDetectedLength: 1
+  _scaleToFitDetectedLength: 0
+  _fixedModelScale: 0.5
   _pivotOffset: 0.4
   _lateralOffset: 0
   _color: {r: 1, g: 0, b: 0, a: 1}
@@ -3510,7 +3511,7 @@ MonoBehaviour:
   _layersPerFrame: 8
   _minSecondsBetweenInferences: 0.2
   _workerRecycleSeconds: 25
-  _confidenceThreshold: 0.3
+  _confidenceThreshold: 0.4
   _nmsIoUThreshold: 0.25
   _maxDetections: 5
   _armClassId: 1
