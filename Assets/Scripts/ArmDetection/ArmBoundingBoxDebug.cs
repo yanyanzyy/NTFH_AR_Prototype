@@ -4,18 +4,24 @@ using UnityEngine;
 namespace ARArmDetection
 {
     /// <summary>
-    /// Renders world-space debug geometry for the SELECTED arm only — never for
-    /// candidates that the manager rejected and never while searching. The selection
-    /// comes from ArmDetectionManager.SelectedDetectionIndex / SelectedDetectionSide;
-    /// when no arm is selected this frame, nothing is drawn.
+    /// Renders world-space debug geometry for EVERY raw detection the arm model produced
+    /// this frame, so the debug view is a faithful picture of what the model is detecting —
+    /// not the single arm the manager selected, and not the temporally-smoothed box the
+    /// manager tracks once locked. Boxes and keypoints are read from
+    /// ArmDetectionManager.RawDetections, which is the detector's own output captured before
+    /// any selection / lock-gating / smoothing touches it. When the model returns nothing (or
+    /// is suspended during a frozen lock), nothing is drawn.
     ///
-    /// Geometry drawn for the selected arm:
-    ///   • White/green rectangle — person bounding box (green = arm-only fallback)
-    ///   • Yellow diamond        — shoulder keypoint
-    ///   • Cyan diamond          — elbow keypoint
-    ///   • Red diamond           — wrist keypoint
+    /// The model regresses exactly TWO keypoints, so two diamonds are drawn per detection —
+    /// no synthetic midpoint. Geometry drawn per detection:
+    ///   • White rectangle       — model bounding box
+    ///   • Green rectangle       — the box the manager currently selected / locked onto
+    ///   • Yellow diamond        — proximal keypoint (near elbow)
+    ///   • Red diamond           — distal keypoint (wrist)
     ///
-    /// Keypoints are only drawn when their confidence exceeds _keypointVisThreshold.
+    /// Boxes are projected to a per-detection heuristic depth for placement only; the box and
+    /// keypoint positions themselves are the model's raw image-space output. Keypoints are only
+    /// drawn when their confidence exceeds _keypointVisThreshold.
     /// Disable or remove this component before shipping.
     /// </summary>
     public class ArmBoundingBoxDebug : MonoBehaviour
@@ -49,35 +55,40 @@ namespace ARArmDetection
                 RetireAll(); return;
             }
 
-            // Only draw when the manager has SELECTED a detection this frame.
-            // While searching (no arm chosen) we render nothing — this keeps the
-            // view clean and avoids the "flying boxes everywhere" effect.
-            int  idx  = _manager.SelectedDetectionIndex;
-            var  dets = _manager.LastDetections;
-            if (idx < 0 || dets == null || idx >= dets.Count)
+            // Draw the detector's RAW output — every box the model returned this frame — so
+            // the debug view reflects what the model is actually detecting. RawDetections is
+            // untouched by the manager's selection / smoothing (unlike LastDetections, whose
+            // selected entry is overwritten with a smoothed box once locked), and is empty
+            // while the model is suspended during a frozen lock.
+            var dets = _manager.RawDetections;
+            if (dets == null || dets.Count == 0)
             {
                 RetireAll(); return;
             }
 
-            var det = dets[idx];
-            bool armOnlyRun = _manager.LastArmStatus != null &&
-                              _manager.LastArmStatus.Contains("arm-only");
-            float depth = _manager.GetEstimatedDepth(det);
+            int selectedIdx = _manager.SelectedDetectionIndex;
 
-            Color boxCol = armOnlyRun ? Color.green : Color.white;
-            DrawRect(det.ImageBounds, depth, boxCol);
+            for (int i = 0; i < dets.Count; i++)
+            {
+                var det = dets[i];
+                float depth = _manager.GetEstimatedDepth(det);
 
-            // Draw keypoints only for the side that was actually picked, so the
-            // visualisation matches the red ArmOverlay quad rather than spraying
-            // markers for both arms of a person.
-            var side = _manager.SelectedDetectionSide;
-            CocoKeypoint shoulderId = side == Side.Left ? CocoKeypoint.LeftShoulder : CocoKeypoint.RightShoulder;
-            CocoKeypoint elbowId    = side == Side.Left ? CocoKeypoint.LeftElbow    : CocoKeypoint.RightElbow;
-            CocoKeypoint wristId    = side == Side.Left ? CocoKeypoint.LeftWrist    : CocoKeypoint.RightWrist;
+                // Green = the detection the manager currently selected / locked onto;
+                // white = every other raw detection the model returned this frame.
+                Color boxCol = i == selectedIdx ? Color.green : Color.white;
+                DrawRect(det.ImageBounds, depth, boxCol);
 
-            DrawKp(det.Keypoints[(int)shoulderId], depth, Color.yellow);
-            DrawKp(det.Keypoints[(int)elbowId],    depth, Color.cyan);
-            DrawKp(det.Keypoints[(int)wristId],    depth, Color.red);
+                // The model regresses exactly TWO keypoints — proximal (near elbow) and distal
+                // (wrist). CustomArmDetector maps proximal → the shoulder slot and distal → the
+                // wrist slot (the elbow slot it fills is a synthetic midpoint, NOT a model
+                // output), so only these two slots are drawn — one diamond per real keypoint.
+                var kps = det.Keypoints;
+                if (kps != null && kps.Length > (int)CocoKeypoint.LeftWrist)
+                {
+                    DrawKp(kps[(int)CocoKeypoint.LeftShoulder], depth, Color.yellow); // proximal (near elbow)
+                    DrawKp(kps[(int)CocoKeypoint.LeftWrist],    depth, Color.red);    // distal (wrist)
+                }
+            }
 
             RetireFrom(_usedCount);
         }

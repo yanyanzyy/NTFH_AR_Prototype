@@ -6,25 +6,32 @@ using UnityEngine.XR.Interaction.Toolkit.UI;
 namespace ARArmDetection
 {
     /// <summary>
-    /// World-space UNLOCK button for the arm target lock.
+    /// Unlock control for the arm target lock.
     ///
     /// Once ArmDetectionManager locks onto an arm it deliberately ignores every
     /// other detection, so if it grabbed the wrong target the only way out is an
-    /// explicit release — this button, the hand pinch-hold gesture, or the
-    /// controller B button calls ArmDetectionManager.Unlock() so a new target
-    /// can be acquired.
+    /// explicit release — the hand pinch-hold gesture, the controller B button,
+    /// or (when _showPanel is on) a world-space UNLOCK ARM button all call
+    /// ArmDetectionManager.Unlock() so a new target can be acquired.
+    ///
+    /// The visible panel is OFF by default to keep the trainee's view clean; the
+    /// gesture and controller unlock work without it. Tick _showPanel to bring
+    /// the tappable button (and its lock-status readout) back.
     ///
     /// HAND-TRACKING UNLOCK: pinch the thumb against _pinchFinger (middle by
     /// default) on either tracked hand and hold for _pinchHoldSeconds. Middle is
     /// deliberate enough that ordinary index-pinch UI interaction and holding the
     /// needle don't trigger it by accident.
     ///
-    /// Groups itself below the ARM DETECTION status panel when one exists,
-    /// otherwise floats in front of the camera.
+    /// When shown, the panel groups itself below the ARM DETECTION status panel
+    /// when one exists, otherwise floats in front of the camera.
     /// </summary>
     public class ArmLockButton : MonoBehaviour
     {
         [SerializeField] private ArmDetectionManager _manager;
+        [Tooltip("Build and show the world-space UNLOCK ARM panel. Off keeps the view clean — " +
+                 "the pinch-hold gesture and controller B unlock still work without it.")]
+        [SerializeField] private bool _showPanel = false;
         [Tooltip("Vertical offset (m) below the ARM DETECTION status panel.")]
         [SerializeField] private float _belowStatusPanelMeters = 0.34f;
         [Tooltip("Also release the lock with the controller B button (harmless when using hands).")]
@@ -66,7 +73,9 @@ namespace ARArmDetection
         private void Awake()
         {
             if (_manager == null) _manager = FindFirstObjectByType<ArmDetectionManager>();
-            BuildUI();
+            if (_showPanel) BuildUI();
+            // The event system is still needed by other world-space UI (e.g. VeinTrainerHUD),
+            // so ensure it exists even when this panel is hidden.
             EnsureEventSystem();
         }
 
@@ -76,6 +85,8 @@ namespace ARArmDetection
                 ReleaseLock();
 
             UpdateHandPinchUnlock();
+
+            if (!_showPanel) return;   // headless: unlock inputs only, no label to refresh
 
             // Throttled: the lock status string changes near-continuously while holding or
             // refining, and rebuilding the label every frame allocates + rebuilds the Canvas.

@@ -459,7 +459,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &393212315
 Transform:
   m_ObjectHideFlags: 0
@@ -2741,7 +2741,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1511012891
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2756,7 +2756,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.ArmOverlay
   _armModelPrefab: {fileID: 8823628010819527810, guid: f13ebf698b27c134ab32dd3454f773c7, type: 3}
   _modelArmAxis: {x: 75, y: -2, z: -275}
-  _naturalArmLengthMeters: 0.65
+  _naturalArmLengthMeters: 1.2
   _scaleToFitDetectedLength: 1
   _pivotOffset: 0.4
   _lateralOffset: 0
@@ -3145,7 +3145,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1754711823
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -3616,6 +3616,7 @@ MonoBehaviour:
   _refineHeadBaselineMeters: 0.35
   _maxRefineSeconds: 12
   _suspendDetectionWhileFrozen: 1
+  _anchorFrozenArm: 1
   _useDepthAxisEstimation: 0
   _depthSampleGrid: 6
   _swapDepthAxisEndpoints: 1
@@ -3628,7 +3629,7 @@ MonoBehaviour:
   _swapFixedAxisEndpoints: 0
   _fixedAxisDepthOffsetMeters: 0
   _gcSweepIntervalSeconds: 30
-  _debugHUD: {fileID: 1142564977}
+  _debugHUD: {fileID: 0}
   _bypassWearerFilter: 1
 --- !u!4 &2062675445
 Transform:

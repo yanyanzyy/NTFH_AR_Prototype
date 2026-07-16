@@ -205,6 +205,19 @@ namespace ARArmDetection
         public string LastArmStatus { get; private set; } = "-";
         public bool IsArmOnlyMode => true;
         public List<PersonDetection> LastDetections { get; } = new();
+
+        /// <summary>
+        /// The detector's UNMODIFIED output for the current frame — a faithful copy of what the
+        /// arm model returned, captured before selection, lock-gating or temporal smoothing touch
+        /// it. Use this (not <see cref="LastDetections"/>) for debug visualisation of "what the
+        /// model is detecting": <see cref="LastDetections"/> has its selected entry overwritten
+        /// with a smoothed, keypoint-derived box while locked (see StabilizeArmOnlyCandidate) and
+        /// replaced with the held pose while frozen. Empty while detection is suspended (frozen
+        /// lock) because the model is not running then. Index-aligned with the raw list the
+        /// selection ran over, so <see cref="SelectedDetectionIndex"/> indexes into it too on
+        /// live frames.
+        /// </summary>
+        public List<PersonDetection> RawDetections { get; } = new();
         public int SelectedDetectionIndex { get; private set; } = -1;
         public Side SelectedDetectionSide { get; private set; } = Side.Left;
         public float LastMaxArmScore => Mathf.Max(
@@ -476,6 +489,9 @@ namespace ARArmDetection
                 LockStatus = "Locked (frozen in place)";
                 ManagerStatus = "Locked - arm model suspended";
                 LastArmStatus = "Held (frozen lock)";
+                // The model is suspended while frozen, so there is no live detection to show —
+                // keep the raw-debug list empty rather than leaving last frame's boxes stale.
+                RawDetections.Clear();
                 LastPersonCount = LastDetections.Count;
                 SelectedDetectionIndex = heldFound ? heldIdx : -1;
                 SelectedDetectionSide = heldSide;
@@ -496,6 +512,13 @@ namespace ARArmDetection
 
             LastDetections.Clear();
             LastDetections.AddRange(persons);
+
+            // Snapshot the detector's output BEFORE stabilisation overwrites the selected
+            // entry, so the bounding-box debug can show the model's real boxes/keypoints.
+            // PersonDetection is a struct and BuildSmoothedDetection allocates a fresh keypoint
+            // array, so later mutation of LastDetections never reaches these copies.
+            RawDetections.Clear();
+            RawDetections.AddRange(persons);
 
             bool found = false;
             ArmCandidate best = default;
