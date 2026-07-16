@@ -2084,7 +2084,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &1142564976
 Transform:
   m_ObjectHideFlags: 0
@@ -3231,7 +3231,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &1849222701
 Transform:
   m_ObjectHideFlags: 0
@@ -3605,8 +3605,8 @@ MonoBehaviour:
   _armOnlyImageSmoothing: 0.8
   _armOnlyWorldSmoothing: 0.9
   _customDetectorEveryNFrames: 1
-  _disableTargetLock: 1
-  _acquireConsistentFrames: 2
+  _disableTargetLock: 0
+  _acquireConsistentFrames: 4
   _acquireRadiusMeters: 0.3
   _acquireMinConfidence: 0.4
   _acquireGapToleranceSeconds: 0.6
