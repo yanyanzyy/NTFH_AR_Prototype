@@ -79,6 +79,12 @@ namespace ARArmDetection
         [SerializeField, Range(1, 12)] private int _customDetectorEveryNFrames = 1;
 
         [Header("Target lock")]
+        [Tooltip("TEMPORARY DEBUG: disable the target-lock mechanism entirely. When on, the manager " +
+                 "never acquires / locks / freezes / gates — it just renders the best live detection " +
+                 "every frame, so the overlay and detections follow the model freely at any angle and " +
+                 "position. Turn OFF to restore normal locking. (Set to true while inspecting the " +
+                 "detection model; revert for production.)")]
+        [SerializeField] private bool _disableTargetLock = true;
         [Tooltip("Consecutive NEW inference results a candidate must stay in roughly the same world " +
                  "position before the overlay locks on. Prevents snapping onto single-frame false " +
                  "positives. Cached detections served between inferences do not count.")]
@@ -473,7 +479,7 @@ namespace ARArmDetection
             // ignored anyway, so skip inference entirely (the model resumes on Unlock()).
             // Without this the arm model runs at full tilt forever after locking, which
             // heats the headset into throttling and eventually crashes the app.
-            if (_suspendDetectionWhileFrozen && IsLockFrozen() && _hasStableArmImage && _hasSmoothedArmWorld)
+            if (!_disableTargetLock && _suspendDetectionWhileFrozen && IsLockFrozen() && _hasStableArmImage && _hasSmoothedArmWorld)
             {
                 // Pin the frozen pose to a spatial anchor and thereafter drive the endpoints from it,
                 // so the overlay stays on the physical arm across headset re-donning.
@@ -560,7 +566,18 @@ namespace ARArmDetection
             }
 
             bool renderOverlay = false;
-            if (_lockState == LockState.Locked)
+            if (_disableTargetLock)
+            {
+                // TEMPORARY DEBUG: locking disabled. Render the best live detection straight
+                // from the model each frame with no acquire / lock / freeze / gate, so the
+                // overlay tracks the arm freely as the user moves to different angles and
+                // positions. World endpoints are the raw per-frame estimate (no smoothing), so
+                // expect the overlay to jitter — that is the model's live output.
+                _lockState = LockState.Searching;
+                renderOverlay = found;
+                LockStatus = found ? "Live (lock disabled)" : "Searching (lock disabled)";
+            }
+            else if (_lockState == LockState.Locked)
             {
                 float refineElapsed = Time.time - _lockAcquiredTime;
 
