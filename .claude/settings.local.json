@@ -53,7 +53,17 @@
       "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\eval_v4_test.py\")",
       "Bash(grep -vE \"it/s|^\\\\s*$\")",
       "Bash(sed \"s|arm_pose_v4.weights.best.pt|arm_pose_v4\\\\\\\\\\\\\\\\weights\\\\\\\\\\\\\\\\best.pt|; s|data.pose.data.yaml|data\\\\\\\\\\\\\\\\pose_kpt_test\\\\\\\\\\\\\\\\data.yaml|\" \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\eval_v4_test.py\")",
-      "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\eval_v4_kpt.py\")"
+      "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\eval_v4_kpt.py\")",
+      "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\kpt_error.py\")",
+      "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\swap_check.py\")",
+      "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\worst_cases.py\")",
+      "Bash(cd \"C:/Users/Admin/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/site-packages/ultralytics/engine\" && grep -n \"on_fit_epoch_end\\\\|self.stop\\\\b\\\\|self.stop =\\\\|self.stop |=\\\\|break\" trainer.py | sed -n '1,40p')",
+      "Bash(grep -vE \"^\\\\s*$\")",
+      "Bash(grep -ao \"Results saved to[^\\\\\"]*\\\\|save_dir[^,]*\\\\|runs[\\\\\\\\/][a-z_0-9]*\" \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\tasks\\\\b04o4n6yi.output\")",
+      "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\rot_test.py\")",
+      "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\zoom_test.py\")",
+      "Bash(python scripts/07_augment_closeups.py --split test)",
+      "Bash(python scripts/07_augment_closeups.py)"
     ]
   }
 }
