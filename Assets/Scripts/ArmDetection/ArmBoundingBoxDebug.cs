@@ -109,8 +109,12 @@ namespace ARArmDetection
                     var prox = kps[(int)CocoKeypoint.LeftShoulder]; // proximal (near elbow)
                     var dist = kps[(int)CocoKeypoint.LeftWrist];    // distal (wrist)
 
-                    Vector3 proxWorld = _manager.ProjectImagePointWithSensedDepth(prox.ImagePos, heuristicDepth, out bool proxHit);
-                    Vector3 distWorld = _manager.ProjectImagePointWithSensedDepth(dist.ImagePos, heuristicDepth, out bool distHit);
+                    // Match the overlay's keypoint-axis placement: same median-sampled depth,
+                    // same on-screen-scaled sample radius, so the diamonds land where the
+                    // overlay endpoints land and any visible gap is real model error.
+                    float kpRadius = Mathf.Max(4f, Mathf.Min(det.ImageBounds.width, det.ImageBounds.height) * 0.08f);
+                    Vector3 proxWorld = _manager.ProjectKeypointWithSensedDepth(prox.ImagePos, kpRadius, heuristicDepth, out bool proxHit);
+                    Vector3 distWorld = _manager.ProjectKeypointWithSensedDepth(dist.ImagePos, kpRadius, heuristicDepth, out bool distHit);
                     float proxDepth = Vector3.Distance(camPos, proxWorld);
                     float distDepth = Vector3.Distance(camPos, distWorld);
                     if (proxHit ^ distHit)
