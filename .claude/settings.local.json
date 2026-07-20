@@ -39,7 +39,21 @@
       "PowerShell($lib = \"C:\\\\Github Desktop\\\\NTFH_AR_Prototype\\\\Library\"; Get-ChildItem $lib -Directory -ErrorAction SilentlyContinue | ForEach-Object { $s = \\(Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum\\).Sum; [PSCustomObject]@{ Name = $_.Name; GB = [math]::Round\\($s/1GB,2\\) } } | Sort-Object GB -Descending | Select-Object -First 15 | Format-Table -AutoSize; \"--- top-level files ---\"; Get-ChildItem $lib -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 5 Name, @{N='MB';E={[math]::Round\\($_.Length/1MB,1\\)}} | Format-Table -AutoSize)",
       "PowerShell($bee = \"C:\\\\Github Desktop\\\\NTFH_AR_Prototype\\\\Library\\\\Bee\"; Get-ChildItem $bee -Directory -ErrorAction SilentlyContinue | ForEach-Object { $s = \\(Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum\\).Sum; [PSCustomObject]@{ Name = $_.Name; GB = [math]::Round\\($s/1GB,2\\) } } | Sort-Object GB -Descending | Select-Object -First 15 | Format-Table -AutoSize; \"--- Bee files ---\"; Get-ChildItem $bee -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 8 Name, @{N='MB';E={[math]::Round\\($_.Length/1MB,1\\)}} | Format-Table -AutoSize)",
       "PowerShell($art = \"C:\\\\Github Desktop\\\\NTFH_AR_Prototype\\\\Library\\\\Bee\\\\artifacts\"; Get-ChildItem $art -Directory -ErrorAction SilentlyContinue | ForEach-Object { $s = \\(Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum\\).Sum; [PSCustomObject]@{ Name = $_.Name; GB = [math]::Round\\($s/1GB,2\\) } } | Sort-Object GB -Descending | Select-Object -First 12 | Format-Table -AutoSize; \"\"; \"Is Library git-ignored?\"; Select-String -Path \"C:\\\\Github Desktop\\\\NTFH_AR_Prototype\\\\.gitignore\" -Pattern \"Library\" -SimpleMatch)",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(git fetch *)",
+      "Bash(git ls-tree *)",
+      "Bash(grep -E 'weights/.*\\\\.pt$')",
+      "Bash(python -c \"import ultralytics; print\\(ultralytics.__file__\\); print\\(ultralytics.__version__\\)\")",
+      "Bash(python -m ultralytics pose val model=runs/arm_pose_v3/weights/best.pt data=data/pose/data.yaml split=test)",
+      "Bash(python -)",
+      "Bash(python scripts/03_train.py --name arm_pose_v4)",
+      "Bash(grep -v \"^\\\\s*$\")",
+      "Bash(grep -vE \"^\\\\s*$|it/s\")",
+      "Bash(tasklist)",
+      "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\eval_v4_test.py\")",
+      "Bash(grep -vE \"it/s|^\\\\s*$\")",
+      "Bash(sed \"s|arm_pose_v4.weights.best.pt|arm_pose_v4\\\\\\\\\\\\\\\\weights\\\\\\\\\\\\\\\\best.pt|; s|data.pose.data.yaml|data\\\\\\\\\\\\\\\\pose_kpt_test\\\\\\\\\\\\\\\\data.yaml|\" \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\eval_v4_test.py\")",
+      "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\eval_v4_kpt.py\")"
     ]
   }
 }

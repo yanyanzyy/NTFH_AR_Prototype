@@ -117,3 +117,4 @@ InitTestScene*.unity*
 # PyTorch weights — regenerable, never loaded by Unity (it uses the .onnx).
 # Base weights (yolo11n*.pt) auto-download; trained checkpoints live in Training/runs/.
 *.pt
+/Training/data/pose_kpt_test
