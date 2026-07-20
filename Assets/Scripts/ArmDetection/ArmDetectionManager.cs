@@ -904,6 +904,15 @@ namespace ARArmDetection
         public float GetEstimatedDepth(PersonDetection p) => EstimateDepth(p);
 
         /// <summary>
+        /// Projects an image point to world space with the same depth-raycast-then-heuristic
+        /// path the overlay endpoints use (see <see cref="ProjectImagePoint"/>). Exposed so
+        /// debug visualisations (ArmBoundingBoxDebug) can seat their geometry at the depth
+        /// the overlay actually sees instead of a guessed depth.
+        /// </summary>
+        public Vector3 ProjectImagePointWithSensedDepth(Vector2 imagePoint, float fallbackDepth, out bool usedRaycast)
+            => ProjectImagePoint(imagePoint, fallbackDepth, out usedRaycast);
+
+        /// <summary>
         /// Starts / pauses the MediaPipe pipeline so it only costs anything while its output
         /// can actually be consumed by RunPrimaryDetector:
         ///   - custom detector unusable  -> MediaPipe is the only detector, run it;

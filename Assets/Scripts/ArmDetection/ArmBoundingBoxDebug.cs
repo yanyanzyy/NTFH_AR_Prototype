@@ -19,10 +19,19 @@ namespace ARArmDetection
     ///   • Yellow diamond        — proximal keypoint (near elbow)
     ///   • Red diamond           — distal keypoint (wrist)
     ///
-    /// Boxes are projected to a per-detection heuristic depth for placement only; the box and
-    /// keypoint positions themselves are the model's raw image-space output. Keypoints are only
-    /// drawn when their confidence exceeds _keypointVisThreshold.
-    /// Disable or remove this component before shipping.
+    /// DEPTH PLACEMENT: geometry is seated at SENSED depth via the manager's raycast path
+    /// (ProjectImagePointWithSensedDepth) — the same one the overlay endpoints use — so the
+    /// debug lines sit on the physical arm and any visual offset against the real arm is
+    /// genuine model error, not a depth-guess artifact. Each keypoint gets its own raycast
+    /// (a lone hit's depth carries over to the other keypoint, mirroring the manager's
+    /// keypoint-axis placement); the box is drawn flat at its centre's sensed depth, because
+    /// raycasting all four corners independently would hit the background at different
+    /// distances and fold the rectangle. When no raycast hits, everything falls back to the
+    /// per-detection heuristic depth. The box and keypoint positions themselves are always
+    /// the model's raw image-space output.
+    ///
+    /// Keypoints are only drawn when the model's per-keypoint visibility score exceeds
+    /// _keypointVisThreshold. Disable or remove this component before shipping.
     /// </summary>
     public class ArmBoundingBoxDebug : MonoBehaviour
     {
@@ -30,7 +39,8 @@ namespace ARArmDetection
         [SerializeField] private PassthroughCameraSource  _cameraSource;
         [Tooltip("World-space width of the debug lines (metres).")]
         [SerializeField] private float _lineWidth = 0.007f;
-        [Tooltip("Minimum keypoint confidence to draw a keypoint marker.")]
+        [Tooltip("Minimum per-keypoint visibility score (the model's own kx,ky,v output) to draw " +
+                 "a keypoint marker. Raise this to hide keypoints the model was guessing at.")]
         [SerializeField, Range(0f, 1f)] private float _keypointVisThreshold = 0.05f;
 
         // ── Line-renderer pool ─────────────────────────────────────────────────────────
@@ -67,26 +77,50 @@ namespace ARArmDetection
             }
 
             int selectedIdx = _manager.SelectedDetectionIndex;
+            Vector3 camPos = _cameraSource.CameraPose.position;
 
             for (int i = 0; i < dets.Count; i++)
             {
                 var det = dets[i];
-                float depth = _manager.GetEstimatedDepth(det);
+                float heuristicDepth = _manager.GetEstimatedDepth(det);
+
+                // Seat the box at the sensed depth of its centre (one raycast; the corners
+                // share it because their rays usually miss the arm and would land on the
+                // background at different distances, folding the rectangle).
+                Vector3 centerWorld = _manager.ProjectImagePointWithSensedDepth(
+                    det.ImageBounds.center, heuristicDepth, out _);
+                float boxDepth = Vector3.Distance(camPos, centerWorld);
 
                 // Green = the detection the manager currently selected / locked onto;
                 // white = every other raw detection the model returned this frame.
                 Color boxCol = i == selectedIdx ? Color.green : Color.white;
-                DrawRect(det.ImageBounds, depth, boxCol);
+                DrawRect(det.ImageBounds, boxDepth, boxCol);
 
                 // The model regresses exactly TWO keypoints — proximal (near elbow) and distal
                 // (wrist). CustomArmDetector maps proximal → the shoulder slot and distal → the
                 // wrist slot (the elbow slot it fills is a synthetic midpoint, NOT a model
                 // output), so only these two slots are drawn — one diamond per real keypoint.
+                // Each is seated by its own depth raycast, mirroring the manager's keypoint-axis
+                // placement (a lone hit's depth carries over to the other keypoint), so the
+                // diamonds land where the overlay endpoints land.
                 var kps = det.Keypoints;
                 if (kps != null && kps.Length > (int)CocoKeypoint.LeftWrist)
                 {
-                    DrawKp(kps[(int)CocoKeypoint.LeftShoulder], depth, Color.yellow); // proximal (near elbow)
-                    DrawKp(kps[(int)CocoKeypoint.LeftWrist],    depth, Color.red);    // distal (wrist)
+                    var prox = kps[(int)CocoKeypoint.LeftShoulder]; // proximal (near elbow)
+                    var dist = kps[(int)CocoKeypoint.LeftWrist];    // distal (wrist)
+
+                    Vector3 proxWorld = _manager.ProjectImagePointWithSensedDepth(prox.ImagePos, heuristicDepth, out bool proxHit);
+                    Vector3 distWorld = _manager.ProjectImagePointWithSensedDepth(dist.ImagePos, heuristicDepth, out bool distHit);
+                    float proxDepth = Vector3.Distance(camPos, proxWorld);
+                    float distDepth = Vector3.Distance(camPos, distWorld);
+                    if (proxHit ^ distHit)
+                    {
+                        if (proxHit) distDepth = proxDepth;
+                        else         proxDepth = distDepth;
+                    }
+
+                    DrawKp(prox, proxDepth, Color.yellow);
+                    DrawKp(dist, distDepth, Color.red);
                 }
             }
 
