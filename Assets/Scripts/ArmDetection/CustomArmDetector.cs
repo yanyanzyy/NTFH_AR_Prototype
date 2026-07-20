@@ -14,7 +14,9 @@ namespace ARArmDetection
     ///
     /// Arms are returned as <see cref="PersonDetection"/> (proximal mapped to the
     /// shoulder keypoint slot, distal to the wrist slot) so the existing
-    /// ArmDetectionManager / overlay pipeline consumes them unchanged.
+    /// ArmDetectionManager / overlay pipeline consumes them unchanged. Each keypoint
+    /// slot carries the model's own per-keypoint visibility score as its Confidence;
+    /// the detection's Confidence remains the box score.
     ///
     /// Expected ONNX output (features-first [1, 11, N]):
     ///   0..3  box cx,cy,w,h   4 arm score   5..10 kpts (kx0,ky0,v0, kx1,ky1,v1)
@@ -137,6 +139,8 @@ namespace ARArmDetection
             public float Score;
             public Vector2 K0;   // proximal (near elbow)
             public Vector2 K1;   // distal (wrist)
+            public float V0;     // model's visibility score for K0
+            public float V1;     // model's visibility score for K1
         }
 
         private void OnEnable() => LoadModel();
@@ -570,6 +574,8 @@ namespace ARArmDetection
                     Score = score,
                     K0 = ReadKeypoint(data, shape, i, kptOffset, 0, featuresFirst, imageWidth, imageHeight),
                     K1 = ReadKeypoint(data, shape, i, kptOffset, 1, featuresFirst, imageWidth, imageHeight),
+                    V0 = ReadKeypointVisibility(data, shape, i, kptOffset, 0, featuresFirst),
+                    V1 = ReadKeypointVisibility(data, shape, i, kptOffset, 1, featuresFirst),
                 });
             }
 
@@ -656,6 +662,15 @@ namespace ARArmDetection
                 Mathf.Clamp((ky - _pendingPadY) * _pendingInvFitY, 0f, imageHeight));
         }
 
+        /// <summary>
+        /// The model's per-keypoint visibility score (third value of each kx,ky,v triplet).
+        /// Ultralytics pose exports emit it through a sigmoid so it is already 0..1; the
+        /// clamp only guards against FP16 wobble.
+        /// </summary>
+        private float ReadKeypointVisibility(ReadOnlySpan<float> data, TensorShape shape, int row, int kptOffset, int k,
+                                             bool featuresFirst)
+            => Mathf.Clamp01(ReadFeature(data, shape, row, kptOffset + 2 + k * 3, featuresFirst));
+
         private Rect XywhToImageBounds(float cx, float cy, float w, float h, int imageWidth, int imageHeight)
         {
             bool normalized = Mathf.Max(Mathf.Abs(cx), Mathf.Abs(cy), Mathf.Abs(w), Mathf.Abs(h)) <= 2f;
@@ -684,6 +699,10 @@ namespace ARArmDetection
         /// Maps an arm pose candidate to the COCO-slot PersonDetection the manager
         /// expects: proximal -&gt; shoulder, distal -&gt; wrist, midpoint -&gt; elbow.
         /// Both Left and Right slots are filled so the manager's side scan finds it.
+        /// Keypoint slots carry the model's PER-KEYPOINT visibility scores (not the box
+        /// score), so downstream consumers — the manager's keypoint gates and the
+        /// bounding-box debug — can tell a confident keypoint from a guessed one. The
+        /// synthetic elbow midpoint gets the weaker of the two.
         /// </summary>
         private PersonDetection ToPersonDetection(PoseCandidate c)
         {
@@ -692,8 +711,8 @@ namespace ARArmDetection
             Vector2 distal = c.K1;
             Vector2 elbow = (proximal + distal) * 0.5f;
 
-            FillArmKeypoints(keypoints, Side.Left, proximal, elbow, distal, c.Score);
-            FillArmKeypoints(keypoints, Side.Right, proximal, elbow, distal, c.Score);
+            FillArmKeypoints(keypoints, Side.Left, proximal, elbow, distal, c.V0, c.V1);
+            FillArmKeypoints(keypoints, Side.Right, proximal, elbow, distal, c.V0, c.V1);
 
             return new PersonDetection
             {
@@ -705,15 +724,15 @@ namespace ARArmDetection
 
         private static void FillArmKeypoints(Keypoint[] keypoints, Side side,
                                              Vector2 shoulder, Vector2 elbow, Vector2 wrist,
-                                             float confidence)
+                                             float shoulderConfidence, float wristConfidence)
         {
             int shoulderIdx = side == Side.Left ? (int)CocoKeypoint.LeftShoulder : (int)CocoKeypoint.RightShoulder;
             int elbowIdx = side == Side.Left ? (int)CocoKeypoint.LeftElbow : (int)CocoKeypoint.RightElbow;
             int wristIdx = side == Side.Left ? (int)CocoKeypoint.LeftWrist : (int)CocoKeypoint.RightWrist;
 
-            keypoints[shoulderIdx] = new Keypoint { ImagePos = shoulder, Confidence = confidence };
-            keypoints[elbowIdx] = new Keypoint { ImagePos = elbow, Confidence = confidence };
-            keypoints[wristIdx] = new Keypoint { ImagePos = wrist, Confidence = confidence };
+            keypoints[shoulderIdx] = new Keypoint { ImagePos = shoulder, Confidence = shoulderConfidence };
+            keypoints[elbowIdx] = new Keypoint { ImagePos = elbow, Confidence = Mathf.Min(shoulderConfidence, wristConfidence) };
+            keypoints[wristIdx] = new Keypoint { ImagePos = wrist, Confidence = wristConfidence };
         }
 
         private static float IoU(Rect a, Rect b)
