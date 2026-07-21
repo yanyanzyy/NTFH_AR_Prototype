@@ -40,12 +40,8 @@ namespace ARArmDetection
         [Tooltip("World-space width of the debug lines (metres).")]
         [SerializeField] private float _lineWidth = 0.007f;
         [Tooltip("Minimum per-keypoint visibility score (the model's own kx,ky,v output) to draw " +
-                 "a keypoint marker. Keep this very low. These scores are NOT comparable to the " +
-                 "box score: the arm_pose training set supervises keypoints on only ~13% of its " +
-                 "images, so the visibility head is trained toward zero and reports a small " +
-                 "fraction even when the keypoint positions are accurate. A 'sensible-looking' " +
-                 "0.3 hides every marker and makes a working keypoint head look broken.")]
-        [SerializeField, Range(0f, 1f)] private float _keypointVisThreshold = 0.02f;
+                 "a keypoint marker. Raise this to hide keypoints the model was guessing at.")]
+        [SerializeField, Range(0f, 1f)] private float _keypointVisThreshold = 0.05f;
 
         // ── Line-renderer pool ─────────────────────────────────────────────────────────
 

@@ -71,13 +71,7 @@ namespace ARArmDetection
         [SerializeField] private float _maxDepthMeters = 8f;
 
         [Header("Arm filtering")]
-        [Tooltip("Minimum per-keypoint VISIBILITY score for a detection to be considered. Keep this " +
-                 "at (or very near) 0: the arm_pose models supervise keypoints on only ~13% of their " +
-                 "training images, so the visibility head is trained toward zero and reports a small " +
-                 "fraction even when the keypoint positions are accurate. Anything meaningfully above " +
-                 "0 silently rejects every detection — no selected box, no lock, no overlay. " +
-                 "Detection quality is gated by the detector's BOX score instead.")]
-        [SerializeField, Range(0f, 1f)] private float _keypointConfidence = 0f;
+        [SerializeField, Range(0f, 1f)] private float _keypointConfidence = 0.01f;
         [SerializeField] private bool _skipWearerFilterInArmOnlyMode = true;
         [SerializeField] private float _armOnlyStabilityRadiusPixels = 420f;
         [SerializeField, Range(0f, 1f)] private float _armOnlyImageSmoothing = 0.65f;
@@ -1071,9 +1065,7 @@ namespace ARArmDetection
 
         private float EstimateDepthFromArmLength(PersonDetection p, float focalPx)
         {
-            // Starts below zero so the first pair always wins: visibility scores legitimately
-            // read 0.00 on this model, and a 0-initialised best would leave the endpoints unset.
-            float bestConf = -1f;
+            float bestConf = 0f;
             Vector2 bestShoulder = default;
             Vector2 bestWrist = default;
 
@@ -1088,16 +1080,13 @@ namespace ARArmDetection
                 }
             }
 
-            // Deliberately NOT gated on visibility score: the model's visibility head is trained
-            // toward zero by the ~87% of training images that carry placeholder keypoints, so a
-            // threshold here rejected accurate keypoints and forced the box-size heuristic even
-            // when a real proximal→distal span was available. The geometric sanity check below
-            // is the meaningful guard — it tests the keypoints themselves, not their self-report.
+            if (bestConf < 0.05f) return 0f;
             float armPx = Vector2.Distance(bestShoulder, bestWrist);
 
-            // Sanity-gate against the box: a real proximal→distal span is comparable to the
-            // box's long side; anything far off means the keypoints collapsed or landed
-            // somewhere arbitrary, so the box heuristic should win.
+            // Sanity-gate against the box: the current model's keypoint head is untrained
+            // (pose mAP ~0), so its keypoints can collapse to a point or land anywhere.
+            // A real proximal→distal span is comparable to the box's long side; anything
+            // far off means the keypoints are garbage and the box heuristic should win.
             float longSidePx = Mathf.Max(p.ImageBounds.width, p.ImageBounds.height);
             if (armPx < 5f || armPx < longSidePx * 0.3f || armPx > longSidePx * 1.5f) return 0f;
 
@@ -1128,19 +1117,6 @@ namespace ARArmDetection
                 WristImage = wrist.ImagePos,
                 Confidence = Mathf.Min(shoulder.Confidence, wrist.Confidence),
             };
-
-            // The candidate's confidence is the model's BOX score, not the keypoint visibility
-            // above. These are different quantities and conflating them stalls the lock: the
-            // arm_pose training set supervises keypoints on only ~13% of its images (the rest
-            // carry placeholder keypoints at visibility 0), so the visibility head is trained
-            // toward zero and scores a fraction of what _acquireMinConfidence expects — even
-            // when the keypoint POSITIONS are accurate (v5 pose mAP50 0.93 on labeled images).
-            // Gating acquisition on visibility therefore meant the lock could never acquire,
-            // and since the overlay only renders once Locked, the overlay never appeared.
-            // The box score is the reliable signal (v5 box mAP50-95 0.90) and is what
-            // _acquireMinConfidence was tuned against. Keypoint visibility stays where it is
-            // meaningful: the per-keypoint sanity gate above and the debug markers.
-            float boxScore = p.Confidence;
 
             bool skipWearerFilter = _bypassWearerFilter || (IsArmOnlyMode && _skipWearerFilterInArmOnlyMode);
             if (!skipWearerFilter && _wearerFilter != null && _wearerFilter.IsWearerArm(arm, _cameraSource)) return false;
@@ -1265,10 +1241,7 @@ namespace ARArmDetection
             }
 
             float effectiveDepth = Vector3.Distance(_cameraSource.CameraPose.position, wristWorld);
-            // Rank candidates by box score: keypoint visibility is too noisy to decide WHICH
-            // detection is the arm, and ranking on it made the selected (green) box flicker
-            // between detections frame to frame.
-            float score = boxScore - effectiveDepth * 0.015f;
+            float score = arm.Confidence - effectiveDepth * 0.015f;
 
             if (_hasStableArmImage && _stableArmSide == side)
             {
@@ -1286,7 +1259,7 @@ namespace ARArmDetection
                     Wrist = wristWorld,
                     Depth = effectiveDepth,
                     Score = score,
-                    Confidence = boxScore,
+                    Confidence = arm.Confidence,
                     ShoulderImage = arm.ShoulderImage,
                     ElbowImage = arm.ElbowImage,
                     WristImage = arm.WristImage,
