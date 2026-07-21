@@ -23,7 +23,7 @@ combine with a smaller batch of correctly hand-labeled mannequin images
 (via 01_label.py) for the real proximal/distal semantics.
 
 USAGE
-    python scripts/05_convert_arm_segmentation_to_pose.py \
+    python scripts/import_arm_segmentation_to_pose.py \
         --input  "C:\\Users\\Xerxes\\Downloads\\Telegram Desktop\\human-arms-detection.yolov11" \
         --output "C:\\Users\\Xerxes\\Downloads\\Telegram Desktop\\arm-pose-converted" \
         --class-id 1

@@ -43,8 +43,11 @@ Produced by the Training/ pipeline (see Training/README.md):
   cd Training
   python scripts/01_label.py
   python scripts/02_prepare_dataset.py
-  python scripts/03_train.py --imgsz 320
-  python scripts/04_export.py --weights runs/<run>/weights/best.pt
+  python scripts/03_augment_closeups.py            # optional
+  python scripts/04_augment_handview.py            # optional
+  python scripts/05_train.py --imgsz 320
+  python scripts/06_evaluate.py --weights runs/<run>/weights/best.pt
+  python scripts/07_export.py --weights runs/<run>/weights/best.pt
 
 DEPLOYED NEEDLE MODEL: best_theothergroup.onnx  (Group 2's "SyringePose" model,
 from the Jin-Rui branch). Assigned to NeedleDetector

@@ -63,7 +63,25 @@
       "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\rot_test.py\")",
       "Bash(python \"C:\\\\Users\\\\Admin\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Github-Desktop-NTFH-AR-Prototype\\\\73fe4fd8-d94c-4332-ae7e-62e1d1be91d4\\\\scratchpad\\\\zoom_test.py\")",
       "Bash(python scripts/07_augment_closeups.py --split test)",
-      "Bash(python scripts/07_augment_closeups.py)"
+      "Bash(python scripts/07_augment_closeups.py)",
+      "Bash(python -c \"import ultralytics,os;print\\(ultralytics.__version__\\);print\\(os.path.dirname\\(ultralytics.__file__\\)\\)\")",
+      "Bash(cd \"C:/Users/Admin/AppData/Local/Packages/PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0/LocalCache/local-packages/Python313/site-packages/ultralytics/utils\" && grep -n \"calculate_keypoints_loss\" -A 55 loss.py | head -75)",
+      "Bash(python verify_patch.py)",
+      "Bash(python -c \"import torch;print\\('cuda',torch.cuda.is_available\\(\\), torch.cuda.get_device_name\\(0\\) if torch.cuda.is_available\\(\\) else ''\\)\")",
+      "Bash(python smoke.py)",
+      "Bash(python scripts/08_augment_handview.py --report-only --per-image 1)",
+      "Bash(python verify_warp.py)",
+      "Bash(sed -i 's/foreshorten=0.5, taper=0.45, near_gain=1.25/foreshorten=0.5, vanish=3.0, near_gain=1.25/' verify_warp.py)",
+      "Bash(python -c \"import ast;[ast.parse\\(open\\(f\\).read\\(\\)\\) for f in ['Training/scripts/07_augment_closeups.py','Training/scripts/08_augment_handview.py','Training/scripts/pose_label_io.py','Training/scripts/pose_loss_patch.py','Training/scripts/03_train.py']];print\\('all scripts parse OK'\\)\")",
+      "Bash(python Training/scripts/07_augment_closeups.py --help)",
+      "Bash(taskkill //F //IM python.exe //T)",
+      "Bash(python /tmp/smoke2.py)",
+      "Bash(nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv)",
+      "Bash(nvidia-smi --query-compute-apps=pid,used_memory --format=csv)",
+      "Bash(python /tmp/smoke3.py)",
+      "Bash(echo \"exit=$?\")",
+      "Read(//tmp/**)",
+      "Bash(cd \"C:/Github Desktop/NTFH_AR_Prototype/Training\" && rm -rf runs/_smoke && rm -f /tmp/smoke*.py /tmp/smoke3.log && echo \"cleaned up smoke artifacts\" && ls runs/)"
     ]
   }
 }

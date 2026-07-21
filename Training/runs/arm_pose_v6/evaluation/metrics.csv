@@ -1,0 +1,2 @@
+run,split,images_total,images_with_keypoints,box_mAP50,box_mAP50_95,box_precision,box_recall,pose_mAP50,pose_mAP50_95,instances_matched,instances_missed,kpt_err_median_px,kpt_err_mean_px,kpt_err_p90_px,PCK@5,PCK@10,PCK@20
+arm_pose_v6,test,2044,263,0.9674,0.8814,0.9487,0.921,0.8986,0.8069,169,94,17.88,20.62,38.78,0.3225,0.6686,0.9408

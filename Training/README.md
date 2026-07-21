@@ -24,7 +24,7 @@ only thing that matters: the arm.
 ```bash
 cd Training
 python3 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate          # Windows: .\.venv\Scripts\activate.bat
 pip install -r requirements.txt
 ```
 
@@ -32,13 +32,21 @@ pip install -r requirements.txt
 
 Run all steps from `Training/`:
 
+**Script numbers are the run order** — `01` → `07`, no gaps, no jumping back.
+Steps 3 and 4 are optional; everything else is required. The `import_*.py`
+scripts are deliberately unnumbered: they are optional one-off data sources
+that run before step 2 (see [Importing more training data](#importing-more-training-data)).
+
 | Step | Command | What it does |
 |------|---------|--------------|
 | 0 | drop images into `data/raw/` | Headset captures of the mannequin arm (best) or phone photos. |
 | 1 | `python scripts/01_label.py` | Interactive keypoint labeler. Press `a`, click **proximal** then **distal**. `SPACE` saves + next, `x` saves a background frame, `q` quits. Resumable. Writes `data/labels/*.txt` + previews in `data/preview/`. |
-| 2 | `python scripts/02_prepare_dataset.py` | Splits labeled images into train/val and writes `data/pose/data.yaml` (`kpt_shape: [2,3]`, single class `arm`). |
-| 3 | `python scripts/03_train.py` | Fine-tunes `yolo11n-pose.pt`. Outputs `runs/arm_pose/weights/best.pt`. Use `--model <prev_best.pt>` to continue from your own weights. |
-| 4 | `python scripts/04_export.py --weights runs/arm_pose/weights/best.pt` | Exports ONNX (opset 12, 320×320) → `Assets/Models/arm-pose-320.onnx`. |
+| 2 | `python scripts/02_prepare_dataset.py` | Splits labeled images into train/val/test and writes `data/pose/data.yaml` (`kpt_shape: [2,3]`, single class `arm`). **Deletes and rebuilds `data/pose/` — re-run steps 3-4 after it.** |
+| 3 *(optional)* | `python scripts/03_augment_closeups.py` | Adds close-up crops (`zoom_*`) to **train only**, covering the framing range the headset sees. Read its docstring first: the crops are much softer than real captures. |
+| 4 *(optional)* | `python scripts/04_augment_handview.py` | Adds foreshortened hand-POV views (`hview_*`) to **train only**. Same softness caveat; `--report-only` measures without writing. |
+| 5 | `python scripts/05_train.py` | Fine-tunes `yolo11n-pose.pt`. Outputs `runs/<name>/weights/best.pt`. Use `--model <prev_best.pt>` to continue from your own weights. |
+| 6 | `python scripts/06_evaluate.py --weights runs/<name>/weights/best.pt` | Scores detection + pose on the test split and writes `runs/<name>/evaluation/`. Ultralytics' own val understates pose badly here (most images carry placeholder keypoints), so use this before trusting a run. |
+| 7 | `python scripts/07_export.py --weights runs/<name>/weights/best.pt` | Exports ONNX (opset 12, 320×320) → `Assets/Models/arm-pose-320.onnx`. |
 
 ### Capture + labeling tips
 - **Capture from the headset** (`TrainingFrameCapture` component) — it matches
@@ -97,15 +105,17 @@ them in one run — pretrain general, then specialize:
 python scripts/import_phlebotomy_zenodo.py --download
 python scripts/import_arm_boxes.py                      # if you have the folder
 python scripts/import_coco_forearms.py --images ... --annotations ... --max 800
-python scripts/02_prepare_dataset.py && python scripts/03_train.py --name arm_pose_stage1
+python scripts/02_prepare_dataset.py && python scripts/05_train.py --name arm_pose_stage1
 
 # Stage 2 - specialize on THE mannequin arm (start fresh raw/labels dirs:
 # keep phleb__ + your labeled mannequin captures, drop coco__/arm__, add negatives)
 python scripts/import_negatives.py --src <egohands _LABELLEDSAMPLES> --max 400
 python scripts/01_label.py                              # your headset captures
 python scripts/02_prepare_dataset.py
-python scripts/03_train.py --model runs/arm_pose_stage1/weights/best.pt
-python scripts/04_export.py --weights runs/arm_pose/weights/best.pt
+python scripts/03_augment_closeups.py                   # optional
+python scripts/05_train.py --model runs/arm_pose_stage1/weights/best.pt --name arm_pose_v6
+python scripts/06_evaluate.py --weights runs/arm_pose_v6/weights/best.pt
+python scripts/07_export.py --weights runs/arm_pose_v6/weights/best.pt
 ```
 
 Your own keypoint-labeled headset captures remain the highest-value data —
@@ -113,7 +123,7 @@ the external sets are pretraining bulk and negatives around them.
 
 ## Deploying to Unity
 
-1. Run step 4 to produce `Assets/Models/arm-pose-320.onnx`.
+1. Run step 7 to produce `Assets/Models/arm-pose-320.onnx`.
 2. In `ArmDetectionScene`, select the object with **CustomArmDetector** and assign
    the new ONNX to its **Model Asset** slot. Set **Input Size = 320**.
 3. Older combined models (`arm-needle-pose-320.onnx`, `best*.onnx`,
@@ -140,15 +150,23 @@ Training/
   requirements.txt
   scripts/
     01_label.py             (interactive keypoint labeler — arm proximal/distal)
-    02_prepare_dataset.py   (train/val split + pose data.yaml)
-    03_train.py             (fine-tune yolo11n-pose, arm-only)
-    04_export.py            (export ONNX → Assets/Models/arm-pose-320.onnx)
+    02_prepare_dataset.py   (train/val/test split + pose data.yaml)
+    03_augment_closeups.py  (optional: close-up crops into train)
+    04_augment_handview.py  (optional: foreshortened hand-POV views into train)
+    05_train.py             (fine-tune yolo11n-pose, arm-only)
+    06_evaluate.py          (detection + pose metrics on the test split)
+    07_export.py            (export ONNX → Assets/Models/arm-pose-320.onnx)
+
+    pose_label_io.py        (shared label read/write + crop geometry for 03/04)
+    pose_loss_patch.py      (keypoint-loss masking applied by 05_train.py)
+
+    (unnumbered = optional one-off data sources; all run BEFORE step 2)
     import_arm_boxes.py     (data/arm-pose-converted/ → 2-kpt arm labels, class 0)
     import_phlebotomy_zenodo.py  (Zenodo training-arm dataset → arm boxes, auto-download)
     import_coco_forearms.py      (COCO person kpts → forearms with real elbow/wrist kpts)
     import_negatives.py          (any armless images → background negatives)
+    import_arm_segmentation_to_pose.py  (one-off Roboflow seg → pose converter)
     make_marker_band.py          (printable ArUco band for the 6-DoF arm tracker)
-    05_convert_arm_segmentation_to_pose.py  (one-off Roboflow seg → pose converter)
   data/
     raw/                 <-- DROP IMAGES HERE (also where the importers write)
     labels/              (pose .txt — from 01_label.py / the importers)

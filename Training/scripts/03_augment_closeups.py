@@ -1,9 +1,9 @@
 """
-Step 7 - Close-up crop augmentation for the TRAIN split.
+Step 3 - Close-up crop augmentation for the TRAIN split.
 
     python scripts/02_prepare_dataset.py      # build the split first
-    python scripts/07_augment_closeups.py     # then add close-ups to train
-    python scripts/03_train.py --name arm_pose_v6
+    python scripts/03_augment_closeups.py     # then add close-ups to train
+    python scripts/05_train.py --name arm_pose_v6
 
 WHY
 ---
@@ -41,68 +41,14 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from pose_label_io import (format_label, has_keypoints, montage, parse_label,
+                           plan_crop, sharpness)
+
 HERE = Path(__file__).resolve().parent
 DATA = HERE.parent / "data"
 POSE = DATA / "pose"
 PREFIX = "zoom_"
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
-
-
-def parse_label(text, w, h):
-    """11-column normalized lines -> [(cls, box_xyxy_px, [(x_px, y_px, v), ...])]."""
-    out = []
-    for line in text.splitlines():
-        p = line.split()
-        if len(p) != 11:
-            continue
-        cls = int(float(p[0]))
-        v = list(map(float, p[1:]))
-        cx, cy, bw, bh = v[0] * w, v[1] * h, v[2] * w, v[3] * h
-        box = np.array([cx - bw / 2, cy - bh / 2, cx + bw / 2, cy + bh / 2])
-        # v = [cx, cy, bw, bh, k0x, k0y, v0, k1x, k1y, v1]
-        kpts = [(v[4] * w, v[5] * h, int(v[6])),
-                (v[7] * w, v[8] * h, int(v[9]))]
-        out.append((cls, box, kpts))
-    return out
-
-
-def format_label(instances, w, h):
-    lines = []
-    for cls, box, kpts in instances:
-        cx = (box[0] + box[2]) / 2 / w
-        cy = (box[1] + box[3]) / 2 / h
-        bw = (box[2] - box[0]) / w
-        bh = (box[3] - box[1]) / h
-        parts = [str(cls), f"{cx:.6f}", f"{cy:.6f}", f"{bw:.6f}", f"{bh:.6f}"]
-        for kx, ky, kv in kpts:
-            if kv == 0:
-                parts += ["0.000000", "0.000000", "0"]
-            else:
-                parts += [f"{min(max(kx / w, 0.0), 1.0):.6f}",
-                          f"{min(max(ky / h, 0.0), 1.0):.6f}", str(kv)]
-        lines.append(" ".join(parts))
-    return "\n".join(lines) + "\n"
-
-
-def plan_crop(img_w, img_h, box, occupancy, jitter, rng):
-    """Crop rectangle that makes `box` cover `occupancy` of the frame.
-
-    Keeps the source aspect ratio, offsets the centre by up to `jitter` of the
-    crop size so the arm is not always centred, and returns None when the
-    required crop would not fit inside the image.
-    """
-    box_area = max(1.0, (box[2] - box[0]) * (box[3] - box[1]))
-    aspect = img_w / img_h
-    crop_h = np.sqrt(box_area / occupancy / aspect)
-    crop_w = crop_h * aspect
-    if crop_w > img_w or crop_h > img_h:
-        return None                      # already closer than the target
-
-    cx = (box[0] + box[2]) / 2 + rng.uniform(-jitter, jitter) * crop_w
-    cy = (box[1] + box[3]) / 2 + rng.uniform(-jitter, jitter) * crop_h
-    x1 = float(np.clip(cx - crop_w / 2, 0, img_w - crop_w))
-    y1 = float(np.clip(cy - crop_h / 2, 0, img_h - crop_h))
-    return x1, y1, x1 + crop_w, y1 + crop_h
 
 
 def transform(instances, crop, out_w, out_h, min_visible):
@@ -134,24 +80,6 @@ def transform(instances, crop, out_w, out_h, min_visible):
         kept.append((cls, clipped, new_kpts))
 
     return kept or None
-
-
-def montage(samples, out_path, cols=4):
-    tiles = []
-    for im, insts in samples:
-        t = im.copy()
-        h, w = t.shape[:2]
-        for _, box, kpts in insts:
-            cv2.rectangle(t, (int(box[0]), int(box[1])), (int(box[2]), int(box[3])),
-                          (60, 200, 60), 2)
-            for kx, ky, kv in kpts:
-                if kv:
-                    cv2.circle(t, (int(kx), int(ky)), 7, (40, 120, 240), -1)
-        tiles.append(cv2.resize(t, (426, 320)))
-    rows = [np.hstack(tiles[i:i + cols]) for i in range(0, len(tiles), cols)]
-    rows = [r for r in rows if r.shape[1] == cols * 426]
-    if rows:
-        cv2.imwrite(str(out_path), np.vstack(rows))
 
 
 def main():
@@ -267,7 +195,8 @@ def main():
     if samples:
         print(f"Preview: {DATA / 'preview_closeup.jpg'}")
     print(f"\n{args.split} split now has {len(list(img_dir.iterdir()))} images.")
-    print("Next: python scripts/03_train.py --name arm_pose_v6")
+    print("Next: python scripts/04_augment_handview.py   (optional hand-POV views)")
+    print("      python scripts/05_train.py --name arm_pose_v6")
     return 0
 
 
