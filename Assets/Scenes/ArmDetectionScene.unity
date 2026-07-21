@@ -2993,6 +2993,8 @@ MonoBehaviour:
   _useDirectVeinProximity: 1
   _showWithinMeters: 0.1
   _pokeWithinMeters: 0.045
+  _gradeFromView: 1
+  _viewDepthToleranceMeters: 0.12
   _wrongPokesToReveal: 3
   _overlayRevealSeconds: 5
   _contactLossGraceSeconds: 0.3
@@ -3076,6 +3078,8 @@ MonoBehaviour:
   _useDirectVeinProximity: 1
   _directContactMeters: 0.06
   _requireAngleInDirectMode: 0
+  _gradeFromView: 1
+  _viewDepthToleranceMeters: 0.12
   _armRadiusMeters: 0.0425
   _contactDistanceMeters: 0.015
   _contactDwellSeconds: 0.15
@@ -3231,7 +3235,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 0
+  m_IsActive: 1
 --- !u!4 &1849222701
 Transform:
   m_ObjectHideFlags: 0
@@ -3262,7 +3266,7 @@ MonoBehaviour:
   _manager: {fileID: 2062675444}
   _cameraSource: {fileID: 899930729}
   _lineWidth: 0.007
-  _keypointVisThreshold: 0.05
+  _keypointVisThreshold: 0.02
 --- !u!1 &1985811700
 GameObject:
   m_ObjectHideFlags: 0
@@ -3504,7 +3508,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7ae13ebf3a440ce4c960e63a8c41ff56, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.CustomArmDetector
-  _modelAsset: {fileID: 5022602860645237092, guid: 8c82bfed1b6abef459c24b4431d32a0c, type: 3}
+  _modelAsset: {fileID: 5022602860645237092, guid: 697ccb937aabf3b43a15488208181727, type: 3}
   _backend: 256
   _inputSize: 320
   _quantizeToFp16: 0
@@ -3599,7 +3603,7 @@ MonoBehaviour:
   _minPersonBboxPixels: 10
   _minDepthMeters: 0.3
   _maxDepthMeters: 3
-  _keypointConfidence: 0.01
+  _keypointConfidence: 0
   _skipWearerFilterInArmOnlyMode: 1
   _armOnlyStabilityRadiusPixels: 420
   _armOnlyImageSmoothing: 0.8
