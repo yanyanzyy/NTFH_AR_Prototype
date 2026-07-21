@@ -410,8 +410,6 @@ namespace ARArmDetection
         private readonly List<Vector3> _axisFilteredPoints = new();
         // Median-depth sampler for the fixed-axis anchor (see TrySenseCenterDepth).
         private readonly List<float> _centerDepthSamples = new();
-        // Median-depth sampler for the keypoint-axis endpoints (see TrySenseKeypointDepth).
-        private readonly List<float> _keypointDepthSamples = new();
         private int _axisCacheFrame = -1;
         private Rect _axisCacheBounds;
         private bool _axisCacheResult;
@@ -921,24 +919,6 @@ namespace ARArmDetection
             => ProjectImagePoint(imagePoint, fallbackDepth, out usedRaycast);
 
         /// <summary>
-        /// Projects a keypoint to world space using the SAME median-sampled depth the overlay's
-        /// keypoint-axis placement uses (see TrySenseKeypointDepth), falling back to
-        /// <paramref name="fallbackDepth"/> when nothing is sensed. Exposed so ArmBoundingBoxDebug
-        /// seats its keypoint diamonds exactly where the overlay endpoints land.
-        /// </summary>
-        public Vector3 ProjectKeypointWithSensedDepth(Vector2 imagePoint, float sampleRadiusPixels,
-                                                      float fallbackDepth, out bool usedRaycast)
-        {
-            if (TrySenseKeypointDepth(imagePoint, sampleRadiusPixels, out float depth))
-            {
-                usedRaycast = true;
-                return _cameraSource.ImagePointToWorld(imagePoint, depth);
-            }
-            usedRaycast = false;
-            return _cameraSource.ImagePointToWorld(imagePoint, fallbackDepth);
-        }
-
-        /// <summary>
         /// Starts / pauses the MediaPipe pipeline so it only costs anything while its output
         /// can actually be consumed by RunPrimaryDetector:
         ///   - custom detector unusable  -> MediaPipe is the only detector, run it;
@@ -1149,37 +1129,27 @@ namespace ARArmDetection
             Vector3 shoulderWorld, wristWorld;
             if (_useKeypointAxis)
             {
-                // Drive the overlay straight from the model's two keypoints. Rather than a single
-                // raycast per keypoint (which one ray slipping past the thin arm onto the
-                // background, or landing on the puffed-up edge of the depth mesh, can throw
-                // forward), sense a MEDIAN depth from a small cross of rays around each keypoint,
-                // then place the keypoint along its own ray at that robust depth. The sample
-                // radius scales with the arm's on-screen size.
-                float kpSampleRadius = Mathf.Max(4f, Mathf.Min(p.ImageBounds.width, p.ImageBounds.height) * 0.08f);
+                // Drive the overlay straight from the model's two keypoints. Cast each keypoint's
+                // image ray against real-world depth so the endpoints seat on the PHYSICAL arm
+                // surface rather than a guessed depth plane.
+                Vector3 proximalWorld = ProjectImagePoint(arm.ShoulderImage, depthHeuristic, out bool proxHit);
+                Vector3 distalWorld   = ProjectImagePoint(arm.WristImage,    depthHeuristic, out bool distHit);
 
-                bool proxHit = TrySenseKeypointDepth(arm.ShoulderImage, kpSampleRadius, out float proxDepth);
-                bool distHit = TrySenseKeypointDepth(arm.WristImage,    kpSampleRadius, out float distDepth);
-
-                // If only ONE keypoint sensed depth, place the other at that same camera distance
-                // so the segment stays coherent on the arm instead of tilting off to the heuristic
-                // plane. If neither did, both fall back to the heuristic depth.
+                // If only ONE keypoint found real depth, place the other at that same camera
+                // distance so the segment stays coherent on the arm instead of tilting off to
+                // the heuristic plane. (When both miss, both already share depthHeuristic.)
                 if (proxHit ^ distHit)
                 {
-                    if (proxHit) distDepth = proxDepth;
-                    else         proxDepth = distDepth;
+                    Vector3 camPos = _cameraSource.CameraPose.position;
+                    float hitDepth = Vector3.Distance(camPos, proxHit ? proximalWorld : distalWorld);
+                    if (proxHit) distalWorld   = _cameraSource.ImagePointToWorld(arm.WristImage,    hitDepth);
+                    else         proximalWorld = _cameraSource.ImagePointToWorld(arm.ShoulderImage, hitDepth);
                 }
-                else if (!proxHit && !distHit)
-                {
-                    proxDepth = distDepth = depthHeuristic;
-                }
-
-                Vector3 proximalWorld = _cameraSource.ImagePointToWorld(arm.ShoulderImage, proxDepth);
-                Vector3 distalWorld   = _cameraSource.ImagePointToWorld(arm.WristImage,    distDepth);
                 if (proxHit || distHit) depthRaycastHits++;
 
                 shoulderWorld = _swapKeypointAxisEndpoints ? distalWorld : proximalWorld;
                 wristWorld    = _swapKeypointAxisEndpoints ? proximalWorld : distalWorld;
-                DepthAxisStatus = $"Keypoint-axis (median): proximal={(proxHit ? "depth" : "est")}, " +
+                DepthAxisStatus = $"Keypoint-axis: proximal={(proxHit ? "depth" : "est")}, " +
                                   $"distal={(distHit ? "depth" : "est")}";
             }
             else if (TryEstimateArmAxisFromDepth(p.ImageBounds, out var axisEndA, out var axisEndB))
@@ -1622,17 +1592,6 @@ namespace ARArmDetection
             new Vector2( 0f,   0.2f),
         };
 
-        // Sample pattern for TrySenseKeypointDepth: the keypoint itself plus a small cross
-        // around it. Unit image-space steps, scaled by a pixel radius at call time.
-        private static readonly Vector2[] KeypointDepthSampleDirs =
-        {
-            new Vector2( 0f,  0f),
-            new Vector2(-1f,  0f),
-            new Vector2( 1f,  0f),
-            new Vector2( 0f, -1f),
-            new Vector2( 0f,  1f),
-        };
-
         /// <summary>
         /// Real, view-independent depth (metres from the RGB camera) of the arm at the given
         /// box, sampled from the Depth API. Raycasts the box centre plus a small inner cross and
@@ -1653,36 +1612,6 @@ namespace ARArmDetection
             {
                 Vector2 pt = new Vector2(center.x + o.x * imageBounds.width,
                                          center.y + o.y * imageBounds.height);
-                var ray = _cameraSource.ImagePointToRay(pt);
-                if (_depthRaycaster.Raycast(ray, out var hit, _maxDepthMeters))
-                    samples.Add(Vector3.Distance(camPos, hit.point));
-            }
-
-            if (samples.Count == 0) return false;
-            samples.Sort();
-            depth = Mathf.Clamp(samples[samples.Count / 2], _minDepthMeters, _maxDepthMeters);
-            return true;
-        }
-
-        /// <summary>
-        /// Robust sensed depth (metres from the camera) at a single image-space keypoint.
-        /// Raycasts the keypoint pixel plus a small cross of neighbours <paramref name="radiusPixels"/>
-        /// away and returns the MEDIAN hit distance, so one ray that slips past the thin arm onto the
-        /// background — or lands on the puffed-up edge of the depth mesh — can't set the endpoint's
-        /// depth on its own. Returns false when the Depth API is unavailable or nothing was hit.
-        /// </summary>
-        private bool TrySenseKeypointDepth(Vector2 imagePoint, float radiusPixels, out float depth)
-        {
-            depth = 0f;
-            if (_depthRaycaster == null || !EnvironmentRaycastManager.IsSupported) return false;
-
-            var samples = _keypointDepthSamples;
-            samples.Clear();
-            Vector3 camPos = _cameraSource.CameraPose.position;
-
-            foreach (var dir in KeypointDepthSampleDirs)
-            {
-                Vector2 pt = imagePoint + dir * radiusPixels;
                 var ray = _cameraSource.ImagePointToRay(pt);
                 if (_depthRaycaster.Raycast(ray, out var hit, _maxDepthMeters))
                     samples.Add(Vector3.Distance(camPos, hit.point));
