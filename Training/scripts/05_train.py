@@ -98,19 +98,7 @@ def main():
                     help="train with stock Ultralytics keypoint losses, letting the ~86%% of "
                          "images with placeholder visibility-0 keypoints suppress the "
                          "visibility head (reproduces arm_pose_v5; see pose_loss_patch.py)")
-    ap.add_argument("--pose-gain", type=float, default=None,
-                    help="pose (keypoint localization) loss gain. Default: 4.0 patched, 12.0 raw. "
-                         "Ultralytics' 12.0 assumes the pose loss diluted ~7-10x by our unlabeled "
-                         "placeholder instances; the mask in pose_loss_patch removes that dilution, "
-                         "so keeping 12.0 lets pose gradients from ONE capture day (65%% of them "
-                         "soft synthetic crops) dominate the shared backbone - that is what dropped "
-                         "arm_pose_v6's box mAP50-95 to 0.881 vs v5's 0.905")
-    ap.add_argument("--kobj-gain", type=float, default=1.0,
-                    help="keypoint-visibility loss gain (Ultralytics default 1.0)")
     args = ap.parse_args()
-
-    if args.pose_gain is None:
-        args.pose_gain = 12.0 if args.raw_pose_loss else 4.0
 
     if not DATA_YAML.exists():
         raise SystemExit(f"{DATA_YAML} missing - run scripts/02_prepare_dataset.py first.")
@@ -134,16 +122,12 @@ def main():
         patience = args.patience
         LOGGER.info(f"Early stopping on fitness (patience={args.patience}).")
 
-    LOGGER.info(f"Loss gains: pose={args.pose_gain} kobj={args.kobj_gain} "
-                f"({'raw' if args.raw_pose_loss else 'masked'} keypoint losses).")
     model.train(
         data=str(DATA_YAML),
         epochs=args.epochs,
         imgsz=args.imgsz,
         batch=args.batch,
         device=args.device,
-        pose=args.pose_gain,
-        kobj=args.kobj_gain,
         patience=patience,
         cos_lr=True,
         close_mosaic=10,
