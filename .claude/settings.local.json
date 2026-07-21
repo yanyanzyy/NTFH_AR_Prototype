@@ -81,7 +81,12 @@
       "Bash(python /tmp/smoke3.py)",
       "Bash(echo \"exit=$?\")",
       "Read(//tmp/**)",
-      "Bash(cd \"C:/Github Desktop/NTFH_AR_Prototype/Training\" && rm -rf runs/_smoke && rm -f /tmp/smoke*.py /tmp/smoke3.log && echo \"cleaned up smoke artifacts\" && ls runs/)"
+      "Bash(cd \"C:/Github Desktop/NTFH_AR_Prototype/Training\" && rm -rf runs/_smoke && rm -f /tmp/smoke*.py /tmp/smoke3.log && echo \"cleaned up smoke artifacts\" && ls runs/)",
+      "Bash(cd \"C:/Github Desktop/NTFH_AR_Prototype/Training\" && echo \"=== train split contents ===\" && ls data/pose/images/train | sed -E 's/^\\(zoom_|hview_\\).*/\\\\1/;t;s/.*/other/' | sort | uniq -c && echo \"=== v6 mtime ===\" && stat -c %y runs/arm_pose_v6/args.yaml | cut -d. -f1 && echo \"=== v6 last row \\(pose/kobj losses\\) ===\" && head -1 runs/arm_pose_v6/results.csv | tr ',' '\\\\n' | head -8 >/dev/null; tail -1 runs/arm_pose_v6/results.csv | cut -d, -f1,4,5,13,14,17,18 && echo \"\\(cols: epoch, train/pose, train/kobj, recall\\(P\\), mAP50\\(P\\), val/pose, val/kobj\\)\" && echo \"=== v5 same cols ===\" && tail -1 runs/arm_pose_v5/results.csv | cut -d, -f1,4,5,13,14,17,18)",
+      "Bash(python shortcut_test.py)",
+      "Bash(grep -vE \"^$|Ultralytics|Speed\")",
+      "Bash(python scripts/05_train.py --help)",
+      "Bash(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader)"
     ]
   }
 }
