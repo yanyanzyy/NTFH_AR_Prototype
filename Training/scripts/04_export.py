@@ -1,7 +1,7 @@
 """
 Step 4 - Export trained ARM-ONLY pose weights to ONNX for Unity (Inference Engine).
 
-    python scripts/07_export.py --weights runs/arm_pose/weights/best.pt
+    python scripts/04_export.py --weights runs/arm_pose/weights/best.pt
 
 Exports a static-shape ONNX (opset 12, 320x320) and copies it into
 Assets/Models/ for the CustomArmDetector component to load.

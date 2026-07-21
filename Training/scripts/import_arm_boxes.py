@@ -96,7 +96,7 @@ def main():
         print(f"  {skipped_no_img} label(s) had no matching image and were skipped.")
     if skipped_bad:
         print(f"  {skipped_bad} malformed label line(s) skipped (expected {TOKENS_2KPT} or {TOKENS_4KPT} tokens).")
-    print("Next: python scripts/02_prepare_dataset.py  (then 05_train.py, 07_export.py)")
+    print("Next: python scripts/02_prepare_dataset.py  (then 03_train.py, 04_export.py)")
     return 0
 
 

@@ -1,13 +1,13 @@
 """
-Step 5 - Train / fine-tune the ARM-ONLY YOLO11n-pose model (1 class, 2 keypoints).
+Step 3 - Train / fine-tune the ARM-ONLY YOLO11n-pose model (1 class, 2 keypoints).
 
 Fine-tunes from yolo11n-pose.pt by default. Outputs land in
 Training/runs/arm_pose/weights/best.pt.
 
-    python scripts/05_train.py
-    python scripts/05_train.py --epochs 150 --imgsz 320 --batch 16
-    python scripts/05_train.py --model /path/to/previous_best.pt   # continue from your own weights
-    python scripts/05_train.py --stop-on loss --patience 20        # stop when val loss stalls
+    python scripts/03_train.py
+    python scripts/03_train.py --epochs 150 --imgsz 320 --batch 16
+    python scripts/03_train.py --model /path/to/previous_best.pt   # continue from your own weights
+    python scripts/03_train.py --stop-on loss --patience 20        # stop when val loss stalls
 
 The deployment target is a single mannequin RIGHT arm in a fixed position, so
 horizontal flip augmentation is disabled (a mirrored frame shows a left arm the
@@ -42,8 +42,6 @@ from pathlib import Path
 
 from ultralytics import YOLO
 from ultralytics.utils import LOGGER
-
-import pose_loss_patch
 
 HERE = Path(__file__).resolve().parent       # Training/scripts
 ROOT = HERE.parents[1]                        # repo root (.../NTFH_AR_Prototype)
@@ -94,20 +92,10 @@ def main():
                     help="what must improve: fitness (box+pose mAP) or total val loss")
     ap.add_argument("--min-delta", type=float, default=1e-4,
                     help="with --stop-on loss, the smallest drop that counts as improvement")
-    ap.add_argument("--raw-pose-loss", action="store_true",
-                    help="train with stock Ultralytics keypoint losses, letting the ~86%% of "
-                         "images with placeholder visibility-0 keypoints suppress the "
-                         "visibility head (reproduces arm_pose_v5; see pose_loss_patch.py)")
     args = ap.parse_args()
 
     if not DATA_YAML.exists():
         raise SystemExit(f"{DATA_YAML} missing - run scripts/02_prepare_dataset.py first.")
-
-    if args.raw_pose_loss:
-        LOGGER.warning("Stock keypoint losses: unlabeled instances WILL suppress the "
-                       "visibility head (--raw-pose-loss).")
-    else:
-        pose_loss_patch.apply()
 
     model = YOLO(args.model)
 
@@ -143,8 +131,7 @@ def main():
 
     best = RUNS_DIR / args.name / "weights" / "best.pt"
     print(f"\nDone. Best weights: {best}")
-    print(f"Next:  python scripts/06_evaluate.py --weights {best}")
-    print(f"       python scripts/07_export.py --weights {best}")
+    print(f"Next:  python scripts/04_export.py --weights {best}")
     return 0
 
 
