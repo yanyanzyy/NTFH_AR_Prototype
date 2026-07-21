@@ -17,8 +17,7 @@ Labels in data/labels/ arrive in mixed formats, so each file is normalized to
 the 11-column 2-keypoint layout (class cx cy w h k0x k0y v0 k1x k1y v1):
 
   * 11 columns          - kept as-is (manual arm_2 labels, phleb import)
-  * 17 columns, class 0 - 4-keypoint layout from import_arm_segmentation_to_pose.py;
-                          kpt2/kpt3 are
+  * 17 columns, class 0 - 4-keypoint layout from 05_convert_*; kpt2/kpt3 are
                           padding, so the first two keypoints are kept
   * class != 0          - foreign annotation (v1__/v2__ files label the NEEDLE,
                           not the arm). If a file has nothing else, the image
@@ -313,7 +312,7 @@ def main():
         items = assigned[split]
         n_kpt = sum(1 for _, t in items if has_visible_keypoints(t))
         print(f"  {split:<5} {len(items):>6} images  ({n_kpt} with keypoints)")
-    print("Next: python scripts/03_augment_closeups.py   (then 04_augment_handview.py, 05_train.py)")
+    print("Next: python scripts/03_train.py")
     return 0
 
 
