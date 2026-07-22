@@ -165,6 +165,15 @@ namespace ARArmDetection
         [SerializeField] private bool _useKeypointAxis = true;
         [Tooltip("Flip which keypoint is treated as shoulder vs wrist end of the overlay.")]
         [SerializeField] private bool _swapKeypointAxisEndpoints = false;
+        [Tooltip("Manual depth trim for KEYPOINT-AXIS mode: shifts both overlay endpoints along their " +
+                 "view rays by this many metres. Positive pushes the overlay AWAY from the camera, " +
+                 "negative pulls it TOWARD you. Use it to seat the model exactly on the physical arm " +
+                 "when the sensed depth is slightly off — the Depth API tends to read the puffed-up " +
+                 "front surface of a thin limb, landing the overlay a centimetre or two near. Both " +
+                 "endpoints shift by the same amount, so the arm's ORIENTATION is unchanged; it only " +
+                 "slides nearer/further. This is the keypoint-axis counterpart of " +
+                 "_fixedAxisDepthOffsetMeters (which only applies in fixed-world-axis mode).")]
+        [SerializeField, Range(-0.5f, 0.5f)] private float _keypointAxisDepthOffsetMeters = 0f;
 
         [Header("Depth-based arm axis (bypasses keypoint regression)")]
         [Tooltip("When a depth raycaster is available, estimate the arm's 3D axis by sampling a grid " +
@@ -1173,6 +1182,17 @@ namespace ARArmDetection
                     proxDepth = distDepth = depthHeuristic;
                 }
 
+                // Manual depth trim: slide BOTH endpoints the same distance along their view rays,
+                // so the overlay seats on the physical arm without changing its orientation. The
+                // Depth API reads the near surface of the depth mesh, which on a thin limb sits a
+                // little in front of the arm's centre line — this is the knob that cancels that.
+                // Clamped to the same sane depth window the sensing path uses.
+                if (Mathf.Abs(_keypointAxisDepthOffsetMeters) > 1e-4f)
+                {
+                    proxDepth = Mathf.Clamp(proxDepth + _keypointAxisDepthOffsetMeters, _minDepthMeters, _maxDepthMeters);
+                    distDepth = Mathf.Clamp(distDepth + _keypointAxisDepthOffsetMeters, _minDepthMeters, _maxDepthMeters);
+                }
+
                 Vector3 proximalWorld = _cameraSource.ImagePointToWorld(arm.ShoulderImage, proxDepth);
                 Vector3 distalWorld   = _cameraSource.ImagePointToWorld(arm.WristImage,    distDepth);
                 if (proxHit || distHit) depthRaycastHits++;
@@ -1180,7 +1200,9 @@ namespace ARArmDetection
                 shoulderWorld = _swapKeypointAxisEndpoints ? distalWorld : proximalWorld;
                 wristWorld    = _swapKeypointAxisEndpoints ? proximalWorld : distalWorld;
                 DepthAxisStatus = $"Keypoint-axis (median): proximal={(proxHit ? "depth" : "est")}, " +
-                                  $"distal={(distHit ? "depth" : "est")}";
+                                  $"distal={(distHit ? "depth" : "est")}" +
+                                  (Mathf.Abs(_keypointAxisDepthOffsetMeters) > 1e-4f
+                                      ? $" (trim {_keypointAxisDepthOffsetMeters:+0.00;-0.00} m)" : "");
             }
             else if (TryEstimateArmAxisFromDepth(p.ImageBounds, out var axisEndA, out var axisEndB))
             {

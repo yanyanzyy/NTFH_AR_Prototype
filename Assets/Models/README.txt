@@ -18,22 +18,34 @@ Same tensor layout as the previous arm-pose-320.onnx (v2), so it is a drop-in sw
   Keypoint POSITIONS are trustworthy, so the manager drives the overlay from
   them (_useKeypointAxis) instead of the old fixed-world-axis fallback.
 
-  IMPORTANT - VISIBILITY SCORES ARE NOT CONFIDENCE:
-  Only ~13% of the training images (263 of 2044) carry real keypoints; the rest
-  are box-only images whose keypoints are placeholders at visibility 0. The
-  visibility head is therefore trained toward zero and reports a small fraction
-  even when the keypoint position is spot on. Two consequences:
+  KEYPOINT VISIBILITY IS BIMODAL - it is a "this is THE arm" flag, not a
+  confidence. Measured on 200 real-rig capture frames (onnxruntime, 2026-07-21):
+  visibility is ~0.99 or ~0.00 with almost nothing in between (115 frames >=0.90,
+  74 frames <0.05). It tracks the BOX score: when box>0.5 (a real arm) min-vis
+  median is 0.998; when box<=0.5 it collapses to ~0. This is a learned
+  discriminator, not a broken head - only ~13% of training images (263 of 2044)
+  carry real keypoints; the other 1781 are box-only phleb/web frames with
+  visibility-0 placeholders, so the model learned "the labeled mannequin arm ->
+  kpts visible, anything else -> visible 0." Consequences:
 
     * Training-time metrics/mAP50(P) in results.csv reads ~0.002 and looks like
       a failed keypoint head. It is not - it averages in the 1781 placeholder
-      images. Trust evaluation/summary.md, which scores labeled images only.
-    * NEVER gate detection quality on keypoint visibility. Use the BOX score.
-      Thresholding visibility at a "sensible" 0.05-0.4 rejects every detection
-      and presents as: model detects fine (white debug boxes appear) but nothing
-      locks and no overlay renders. This bug cost a debugging session on
-      2026-07-21; the gates now live on the box score
-      (ArmDetectionManager._acquireMinConfidence) and _keypointConfidence is
-      pinned to 0.
+      images. Trust evaluation/summary.md, which scores labeled images only
+      (pose mAP50 0.93, median 15 px).
+    * Keypoints only "show" on confident frames. On marginal detections (motion
+      blur, oblique angle, weak lighting) the box score dips, visibility snaps to
+      0, and the debug diamonds vanish. That is expected, not a regression.
+    * Gate detection quality on the BOX score, NOT visibility. Because visibility
+      is bimodal it drops below 0.4 on ~11% of even confident frames; the lock
+      needs 4 CONSECUTIVE passing frames, so a visibility gate stalled the lock
+      intermittently (and, if thresholded higher, permanently - no lock, no
+      overlay). Cost a debugging session on 2026-07-21. Gates now live on the box
+      score (ArmDetectionManager._acquireMinConfidence); _keypointConfidence is 0.
+    * Biggest available win: more keypoint labels. 1548 real-rig captures exist in
+      Training/data/raw/ArmCaptures but only ~263 were labeled. Labeling more
+      (scripts/01_label.py, 2 clicks/frame) softens the bimodal visibility and,
+      more importantly, lifts the box DETECTION RATE (72.6% on the test split -
+      the current weakest link, well below keypoint quality).
 
   Preprocessing: frames must be LETTERBOXED (aspect-fit + gray pad), matching
   Ultralytics train/val. CustomArmDetector does this; don't feed stretched frames.

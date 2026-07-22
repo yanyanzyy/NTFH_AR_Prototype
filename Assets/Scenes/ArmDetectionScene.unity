@@ -3508,12 +3508,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7ae13ebf3a440ce4c960e63a8c41ff56, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ARArmDetection.CustomArmDetector
-  _modelAsset: {fileID: 5022602860645237092, guid: 697ccb937aabf3b43a15488208181727, type: 3}
+  _modelAsset: {fileID: 5022602860645237092, guid: 0cacf66c896bf7d43ba0450f16245a69, type: 3}
   _backend: 256
   _inputSize: 320
   _quantizeToFp16: 0
   _layersPerFrame: 8
-  _minSecondsBetweenInferences: 0.2
+  _minSecondsBetweenInferences: 0.5
   _workerRecycleSeconds: 25
   _confidenceThreshold: 0.4
   _nmsIoUThreshold: 0.25
@@ -3627,6 +3627,7 @@ MonoBehaviour:
   _anchorFrozenArm: 1
   _useKeypointAxis: 1
   _swapKeypointAxisEndpoints: 0
+  _keypointAxisDepthOffsetMeters: -0.04
   _useDepthAxisEstimation: 0
   _depthSampleGrid: 6
   _swapDepthAxisEndpoints: 1
