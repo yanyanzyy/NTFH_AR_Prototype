@@ -10,18 +10,19 @@ namespace ARArmDetection
     ///
     /// Once ArmDetectionManager locks onto an arm it deliberately ignores every
     /// other detection, so if it grabbed the wrong target the only way out is an
-    /// explicit release — the hand pinch-hold gesture, the controller B button,
-    /// or (when _showPanel is on) a world-space UNLOCK ARM button all call
-    /// ArmDetectionManager.Unlock() so a new target can be acquired.
+    /// explicit release — the RE-DETECT ARM button on ArmOverlayControlPanel (the
+    /// primary path), the controller B button, the optional hand pinch-hold
+    /// gesture, or (when _showPanel is on) a world-space UNLOCK ARM button. All
+    /// call ArmDetectionManager.Unlock() so a new target can be acquired.
     ///
     /// The visible panel is OFF by default to keep the trainee's view clean; the
-    /// gesture and controller unlock work without it. Tick _showPanel to bring
-    /// the tappable button (and its lock-status readout) back.
+    /// controller unlock works without it. Tick _showPanel to bring the tappable
+    /// button (and its lock-status readout) back.
     ///
-    /// HAND-TRACKING UNLOCK: pinch the thumb against _pinchFinger (middle by
-    /// default) on either tracked hand and hold for _pinchHoldSeconds. Middle is
-    /// deliberate enough that ordinary index-pinch UI interaction and holding the
-    /// needle don't trigger it by accident.
+    /// HAND-TRACKING UNLOCK (legacy, OFF by default — replaced by the RE-DETECT
+    /// ARM button): pinch the thumb against _pinchFinger (middle by default) on
+    /// either tracked hand and hold for _pinchHoldSeconds. Re-enable
+    /// _unlockWithHandPinch if a buttonless fallback is ever needed.
     ///
     /// When shown, the panel groups itself below the ARM DETECTION status panel
     /// when one exists, otherwise floats in front of the camera.
@@ -37,9 +38,11 @@ namespace ARArmDetection
         [Tooltip("Also release the lock with the controller B button (harmless when using hands).")]
         [SerializeField] private bool _unlockWithControllerB = true;
 
-        [Header("Hand-gesture unlock (hand tracking)")]
-        [Tooltip("Release the lock by pinching thumb + _pinchFinger on either hand and holding.")]
-        [SerializeField] private bool _unlockWithHandPinch = true;
+        [Header("Hand-gesture unlock (legacy — replaced by the RE-DETECT ARM button)")]
+        [Tooltip("Release the lock by pinching thumb + _pinchFinger on either hand and holding. " +
+                 "OFF by default: the RE-DETECT ARM button on the overlay control panel is the " +
+                 "primary unlock now. Re-enable for a buttonless fallback.")]
+        [SerializeField] private bool _unlockWithHandPinch = false;
         [Tooltip("Which finger must pinch against the thumb. Middle (default) avoids clashing " +
                  "with index pinches used for UI and with the needle grip.")]
         [SerializeField] private OVRHand.HandFinger _pinchFinger = OVRHand.HandFinger.Middle;

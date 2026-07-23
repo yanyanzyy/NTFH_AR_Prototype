@@ -109,10 +109,14 @@ namespace ARArmDetection
         /// before Awake). VeinMap reads prefab-authored vein paths from under this.</summary>
         public Transform ModelRoot => _model;
 
-        /// <summary>True when the overlay mesh should currently be drawn: either it's never hidden,
-        /// or a <see cref="RevealFor"/> window is still open. WearerArmOccluder reads this so the
-        /// depth occluders only run while there is actually an overlay to sit in front of.</summary>
-        public bool IsModelRevealed => !_hideModelUntilRevealed || Time.time < _revealUntilTime;
+        /// <summary>True when the overlay mesh should currently be drawn: the model is actually
+        /// shown (not hidden by Render(null) — overlay toggled off, or no valid arm) AND either
+        /// it's never answer-key hidden or a <see cref="RevealFor"/> window is still open.
+        /// WearerArmOccluder and VeinPathVisualizer read this so the depth occluders and vein
+        /// lines only run while there is actually an overlay to sit in front of.</summary>
+        public bool IsModelRevealed =>
+            (_model == null || _model.gameObject.activeInHierarchy) &&
+            (!_hideModelUntilRevealed || Time.time < _revealUntilTime);
 
         /// <summary>Flash the overlay mesh on for <paramref name="seconds"/> (e.g. to show the
         /// correct vein sites after repeated wrong pokes). Extends any window already open.</summary>

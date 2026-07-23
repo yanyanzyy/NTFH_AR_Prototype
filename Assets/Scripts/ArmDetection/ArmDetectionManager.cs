@@ -278,8 +278,12 @@ namespace ARArmDetection
 
         /// <summary>True while the tracker is locked onto a target arm (endpoints valid).
         /// The lock is held through detection dropouts — the pose stays anchored in world
-        /// space — until Unlock() is called or the optional auto-unlock timer expires.</summary>
-        public bool IsLocked => _lockState == LockState.Locked && _hasSmoothedArmWorld;
+        /// space — until Unlock() is called or the optional auto-unlock timer expires.
+        /// Reports FALSE while the overlay is toggled off: to every consumer (vein map,
+        /// vein lines, trainer HUD, injection evaluators) "overlay off" must look exactly
+        /// like "no arm", otherwise they keep drawing/grading against the invisible held
+        /// pose. The internal lock state is still kept (see OverlayEnabled).</summary>
+        public bool IsLocked => OverlayEnabled && _lockState == LockState.Locked && _hasSmoothedArmWorld;
 
         /// <summary>Human-readable lock state for the HUD and the unlock button.</summary>
         public string LockStatus { get; private set; } = "Searching";
@@ -289,8 +293,9 @@ namespace ARArmDetection
 
         /// <summary>
         /// Releases the current target lock so a new arm can be acquired. Wired to the
-        /// UNLOCK ARM button, the hand pinch-hold gesture, and controller B (see
-        /// ArmLockButton) for when the overlay grabbed the wrong target.
+        /// RE-DETECT ARM button (ArmOverlayControlPanel), controller B, and the optional
+        /// legacy pinch-hold gesture (ArmLockButton) for when the overlay grabbed the
+        /// wrong target.
         /// </summary>
         public void Unlock()
         {
@@ -302,6 +307,22 @@ namespace ARArmDetection
             DestroyArmAnchor();
             LockStatus = "Searching (unlocked)";
             Debug.Log("[ArmManager] Target lock released — searching for a new arm.");
+        }
+
+        /// <summary>Master switch for the whole arm-overlay pipeline, driven by the
+        /// OVERLAY ON / OVERLAY OFF buttons on ArmOverlayControlPanel. While off the
+        /// overlay is hidden and all detection work (arm model, needle model, MediaPipe
+        /// fallback) is suspended so the headset stays cool. The lock state is
+        /// deliberately KEPT — toggling back on resumes exactly where it left off; use
+        /// Unlock() / the RE-DETECT ARM button to force a fresh acquisition.</summary>
+        public bool OverlayEnabled { get; private set; } = true;
+
+        /// <summary>Turns the overlay pipeline on or off. See <see cref="OverlayEnabled"/>.</summary>
+        public void SetOverlayEnabled(bool enable)
+        {
+            if (OverlayEnabled == enable) return;
+            OverlayEnabled = enable;
+            Debug.Log($"[ArmManager] Overlay {(enable ? "enabled — pipeline resumed" : "disabled — pipeline suspended (lock kept)")}.");
         }
 
         /// <summary>
@@ -527,6 +548,28 @@ namespace ARArmDetection
             if (_customArmDetector == null && _mediaPipeDetector == null) { ManagerStatus = "ERR: No detector assigned"; return; }
             if (_overlay == null) { ManagerStatus = "ERR: Overlay not assigned"; return; }
             if (!_cameraSource.HasFrame) { ManagerStatus = "Waiting: no camera frame"; return; }
+
+            // Overlay toggled OFF from the control panel: hide the overlay and suspend all
+            // detection work (arm + needle + MediaPipe fallback) — same heat rationale as the
+            // frozen-lock suspend below. Lock state is kept so OVERLAY ON resumes in place.
+            if (!OverlayEnabled)
+            {
+                SetMediaPipeRunning(false);   // no-op unless the fallback runner is active
+                ManagerStatus = "Overlay OFF (paused)";
+                LastArmStatus = "Paused (overlay off)";
+                LockStatus = "Paused (overlay off — lock kept)";
+                NeedleStatus = "Paused (overlay off)";
+                // Needle updates (incl. the lost-timeout) are skipped while off, so clear the
+                // latched pose — otherwise NeedleVisualizer keeps drawing a frozen needle.
+                _hasNeedleWorld = false;
+                RawDetections.Clear();
+                LastPersonCount = 0;
+                SelectedDetectionIndex = -1;
+                LastFoundArm = false;
+                _overlay.Render(null, _cameraSource.CameraTransform);
+                _debugHUD?.ReportDetections(0, 0);
+                return;
+            }
 
             UpdateMediaPipeLifecycle();
 
