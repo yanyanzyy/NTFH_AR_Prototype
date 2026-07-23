@@ -145,6 +145,21 @@ namespace ARArmDetection
                  "heats the headset until it throttles (progressive lag) and can crash the app. " +
                  "The model resumes automatically the moment the lock is released.")]
         [SerializeField] private bool _suspendDetectionWhileFrozen = true;
+        [Tooltip("At the moment the lock freezes, register the pose against the PHYSICAL arm: fit " +
+                 "the arm's 3D axis from a one-shot grid of Depth API raycasts over the detection " +
+                 "box and project both endpoints onto that fitted line. The model's keypoints have " +
+                 "per-frame, per-viewpoint error, so without this every lock lands somewhere " +
+                 "slightly different and no offset can be calibrated to stick. The depth sensor " +
+                 "sees the same rigid prop every session, so snapping to it corrects lateral, " +
+                 "depth and tilt error AND makes whatever residual remains CONSISTENT — the trim " +
+                 "sliders finally hold their value across locks and sessions. Along-arm position is " +
+                 "also recentred on the depth cloud's midpoint (guarded by a span-sanity check); " +
+                 "keypoints keep only which end is proximal. The snap " +
+                 "is guarded (min hit count, axis agreement, max movement) and falls back to the " +
+                 "unsnapped pose when the Depth API can't see the arm. Runs ONCE per lock, at " +
+                 "freeze — never during acquisition, so it cannot destabilise locking (which is " +
+                 "why the per-frame _useDepthAxisEstimation stays off).")]
+        [SerializeField] private bool _depthSnapAtFreeze = true;
 
         [Header("World-locked spatial anchor")]
         [Tooltip("Pin the frozen overlay to a Meta SPATIAL ANCHOR so it stays fixed on the PHYSICAL " +
@@ -389,6 +404,18 @@ namespace ARArmDetection
         private bool _hasStableFixedAxisDepth;
         private float _stableFixedAxisDepth;
 
+        // One-shot depth registration at lock freeze (see _depthSnapAtFreeze). Applied at most
+        // once per lock; reset on Unlock via ResetArmStability.
+        private bool _depthSnapApplied;
+
+        // Denser one-shot grid than the per-frame _depthSampleGrid — cost is irrelevant at
+        // freeze time (runs once per lock, ~100 raycasts).
+        private const int DepthSnapGrid = 10;
+        // Guards: refuse the snap (keep the unsnapped pose) rather than apply a bad fit.
+        private const int DepthSnapMinHits = 12;          // Depth API barely saw the arm
+        private const float DepthSnapMaxAxisAngle = 30f;  // fit ⊥ keypoints ⇒ table edge/background
+        private const float DepthSnapMaxMoveMeters = 0.12f; // larger jump ⇒ fit is nonsense
+
         // Spatial anchor holding the frozen arm pose in physical-world space (survives headset
         // re-donning / tracking-origin re-centring). Endpoints are stored in the anchor's local
         // frame at freeze time and re-derived from the anchor's live pose every frame.
@@ -511,6 +538,9 @@ namespace ARArmDetection
             {
                 // Pin the frozen pose to a spatial anchor and thereafter drive the endpoints from it,
                 // so the overlay stays on the physical arm across headset re-donning.
+                // The snap can land here first (not via the main Locked branch) when freezing is
+                // reached between frames — it is idempotent and must precede the anchor capture.
+                ApplyDepthSnapPose();
                 CreateArmAnchor();
                 UpdateArmAnchorPose();
 
@@ -628,7 +658,9 @@ namespace ARArmDetection
                     // detections are ignored. The physical arm hasn't moved - any pose change
                     // from here on would come from detection shift as the user moves and looks
                     // around, which is exactly the wobble/drift the freeze exists to prevent.
-                    // Pin it to a spatial anchor so it also survives headset re-donning.
+                    // First register the pose against the sensed arm surface (one-shot), then
+                    // pin it to a spatial anchor so it also survives headset re-donning.
+                    ApplyDepthSnapPose();
                     CreateArmAnchor();
                     UpdateArmAnchorPose();
                     UseHeldLockPose(ref found, ref best, ref selectedIdx, ref selectedSide);
@@ -1533,6 +1565,8 @@ namespace ARArmDetection
             _hasStableArmImage = false;
             _hasSmoothedArmWorld = false;
             _hasStableFixedAxisDepth = false;
+            // Re-arm the freeze-time depth snap for the next lock.
+            _depthSnapApplied = false;
         }
 
         /// <summary>
@@ -1727,6 +1761,198 @@ namespace ARArmDetection
         /// training signal (e.g. only box/class supervision exists for a class) - orientation
         /// comes from sensed geometry instead of an untrained regression output.
         /// </summary>
+        /// <summary>
+        /// Geometric core shared by the per-frame axis estimate and the freeze-time depth snap:
+        /// raycast a grid of Depth API samples across <paramref name="imageBounds"/> (shrunk 10%
+        /// inward so box overshoot doesn't sample background), reject outliers against the median
+        /// depth, and PCA the surviving cloud into a centroid + dominant axis. On success the
+        /// inlier cloud is left in _axisFilteredPoints for callers that need extents. Deliberately
+        /// does NOT check _useDepthAxisEstimation — that gate belongs to the per-frame caller
+        /// only; the one-shot freeze snap must work while the per-frame path stays disabled.
+        /// </summary>
+        private bool TryFitArmAxisFromDepth(Rect imageBounds, int grid,
+                                            out Vector3 centroid, out Vector3 axisDir, out int hitCount)
+        {
+            centroid = default;
+            axisDir = default;
+            hitCount = 0;
+            if (_depthRaycaster == null || !EnvironmentRaycastManager.IsSupported) return false;
+
+            float padX = imageBounds.width * 0.1f;
+            float padY = imageBounds.height * 0.1f;
+
+            var hits = _axisHits;
+            hits.Clear();
+            for (int gx = 0; gx < grid; gx++)
+            {
+                float u = grid > 1 ? gx / (float)(grid - 1) : 0.5f;
+                float px = Mathf.Lerp(imageBounds.xMin + padX, imageBounds.xMax - padX, u);
+
+                for (int gy = 0; gy < grid; gy++)
+                {
+                    float v = grid > 1 ? gy / (float)(grid - 1) : 0.5f;
+                    float py = Mathf.Lerp(imageBounds.yMin + padY, imageBounds.yMax - padY, v);
+
+                    var ray = _cameraSource.ImagePointToRay(new Vector2(px, py));
+                    if (_depthRaycaster.Raycast(ray, out var hit, _maxDepthMeters))
+                        hits.Add(hit.point);
+                }
+            }
+
+            hitCount = hits.Count;
+            if (hits.Count < 6) return false;
+
+            // Outlier rejection: keep points near the median depth so any background pixels
+            // that slipped through don't skew the axis away from the true arm surface.
+            Vector3 camPos = _cameraSource.CameraPose.position;
+            var depths = _axisDepths;
+            depths.Clear();
+            foreach (var h in hits) depths.Add(Vector3.Distance(camPos, h));
+            depths.Sort();
+            float medianDepth = depths[depths.Count / 2];
+
+            var filtered = _axisFilteredPoints;
+            filtered.Clear();
+            foreach (var h in hits)
+                if (Mathf.Abs(Vector3.Distance(camPos, h) - medianDepth) < 0.15f)
+                    filtered.Add(h);
+            if (filtered.Count < 5)
+            {
+                filtered.Clear();
+                filtered.AddRange(hits);
+            }
+
+            centroid = Vector3.zero;
+            foreach (var p in filtered) centroid += p;
+            centroid /= filtered.Count;
+
+            float xx = 0f, xy = 0f, xz = 0f, yy = 0f, yz = 0f, zz = 0f;
+            foreach (var p in filtered)
+            {
+                Vector3 d = p - centroid;
+                xx += d.x * d.x; xy += d.x * d.y; xz += d.x * d.z;
+                yy += d.y * d.y; yz += d.y * d.z; zz += d.z * d.z;
+            }
+            axisDir = DominantEigenvector(xx, xy, xz, yy, yz, zz);
+            return true;
+        }
+
+        /// <summary>
+        /// One-shot registration of the frozen pose against the PHYSICAL arm (see
+        /// _depthSnapAtFreeze). Fits the arm's 3D axis from sensed depth over the stable
+        /// detection box and projects both smoothed endpoints onto that line — correcting the
+        /// lateral, depth and tilt error the keypoints carry, while keeping what geometry
+        /// cannot know (along-arm position, proximal vs distal identity) from the keypoints.
+        /// MUST run before CreateArmAnchor captures the endpoints into the anchor frame.
+        /// Idempotent per lock; every guard failure keeps the unsnapped pose and says why.
+        /// </summary>
+        private void ApplyDepthSnapPose()
+        {
+            if (_depthSnapApplied) return;
+            _depthSnapApplied = true;
+            if (!_depthSnapAtFreeze || !_hasSmoothedArmWorld || !_hasStableArmImage) return;
+
+            Rect box = _stableArmDetection.ImageBounds;
+            if (box.width < 4f || box.height < 4f)
+            {
+                Debug.Log("[ArmManager] Depth snap skipped — no usable detection box at freeze.");
+                return;
+            }
+
+            if (!TryFitArmAxisFromDepth(box, DepthSnapGrid,
+                                        out Vector3 centroid, out Vector3 axisDir, out int hitCount)
+                || hitCount < DepthSnapMinHits)
+            {
+                DepthAxisStatus = $"Depth snap skipped: {hitCount} hits (<{DepthSnapMinHits})";
+                Debug.Log($"[ArmManager] Depth snap skipped — {hitCount} depth hits " +
+                          $"(<{DepthSnapMinHits} needed); keeping keypoint pose.");
+                return;
+            }
+
+            Vector3 kpAxis = _smoothedWristWorld - _smoothedShoulderWorld;
+            if (kpAxis.sqrMagnitude < 1e-6f) return;
+            Vector3 kpDir = kpAxis.normalized;
+
+            // PCA has a sign ambiguity; orient the fitted axis to the keypoints' semantic
+            // proximal→distal direction before comparing or projecting.
+            if (Vector3.Dot(axisDir, kpDir) < 0f) axisDir = -axisDir;
+            float axisAngle = Vector3.Angle(axisDir, kpDir);
+            if (axisAngle > DepthSnapMaxAxisAngle)
+            {
+                DepthAxisStatus = $"Depth snap skipped: axis Δ{axisAngle:F0}° (>{DepthSnapMaxAxisAngle:F0}°)";
+                Debug.Log($"[ArmManager] Depth snap skipped — fitted axis disagrees with keypoints " +
+                          $"by {axisAngle:F0}° (probably fit the table edge); keeping keypoint pose.");
+                return;
+            }
+
+            Vector3 snapShoulder = centroid + axisDir * Vector3.Dot(_smoothedShoulderWorld - centroid, axisDir);
+            Vector3 snapWrist    = centroid + axisDir * Vector3.Dot(_smoothedWristWorld    - centroid, axisDir);
+
+            // ALONG-AXIS registration: projecting onto the fitted line fixed lateral, depth
+            // and tilt, but WHERE the pair sits along the arm still came purely from the
+            // keypoints — their noisiest output, and (with an instant freeze) averaged from a
+            // single viewpoint, so the overlay slid slightly along the arm on every lock. The
+            // depth cloud is a physical reference for this too: it spans the detected box, so
+            // its extent along the axis is the sensed arm span. Recentre the endpoint pair on
+            // the cloud's MIDPOINT (extremes jitter with the sample grid; the middle doesn't),
+            // keeping the pair's own length. Guarded: a cloud much shorter or longer than the
+            // endpoint span means the fit caught a sliver of the arm or ran onto the table —
+            // keep the keypoint placement in that case.
+            float minProj = float.MaxValue, maxProj = float.MinValue;
+            foreach (var p in _axisFilteredPoints)
+            {
+                float proj = Vector3.Dot(p - centroid, axisDir);
+                if (proj < minProj) minProj = proj;
+                if (proj > maxProj) maxProj = proj;
+            }
+            float cloudLen = maxProj - minProj;
+            float spanLen = Vector3.Distance(snapShoulder, snapWrist);
+            bool alongApplied = false;
+            if (spanLen > 0.05f && cloudLen > spanLen * 0.6f && cloudLen < spanLen * 1.6f)
+            {
+                float cloudMid = (minProj + maxProj) * 0.5f;
+                float pairMid = (Vector3.Dot(snapShoulder - centroid, axisDir) +
+                                 Vector3.Dot(snapWrist - centroid, axisDir)) * 0.5f;
+                Vector3 alongShift = axisDir * (cloudMid - pairMid);
+                snapShoulder += alongShift;
+                snapWrist += alongShift;
+                alongApplied = true;
+            }
+
+            // The fitted axis lies on the depth mesh's surface, which carries the same
+            // systematic bias the depth trim slider was calibrated against — re-apply the trim
+            // along each endpoint's view ray so it keeps meaning "seat the overlay on the arm".
+            if (Mathf.Abs(_keypointAxisDepthOffsetMeters) > 1e-4f)
+            {
+                Vector3 camPos = _cameraSource.CameraPose.position;
+                snapShoulder += (snapShoulder - camPos).normalized * _keypointAxisDepthOffsetMeters;
+                snapWrist    += (snapWrist    - camPos).normalized * _keypointAxisDepthOffsetMeters;
+            }
+
+            float moveShoulder = Vector3.Distance(snapShoulder, _smoothedShoulderWorld);
+            float moveWrist    = Vector3.Distance(snapWrist, _smoothedWristWorld);
+            if (moveShoulder > DepthSnapMaxMoveMeters || moveWrist > DepthSnapMaxMoveMeters)
+            {
+                DepthAxisStatus = $"Depth snap skipped: would move {Mathf.Max(moveShoulder, moveWrist) * 100f:F0} cm";
+                Debug.Log($"[ArmManager] Depth snap skipped — endpoints would move " +
+                          $"{moveShoulder * 100f:F1}/{moveWrist * 100f:F1} cm " +
+                          $"(>{DepthSnapMaxMoveMeters * 100f:F0} cm cap); keeping keypoint pose.");
+                return;
+            }
+
+            _smoothedShoulderWorld = snapShoulder;
+            _smoothedWristWorld = snapWrist;
+            // Detection suspends while frozen, so nothing overwrites this status until Unlock —
+            // the HUD's DepthAxis row shows the snap summary for the whole frozen phase.
+            DepthAxisStatus = $"Depth snap: {_axisFilteredPoints.Count} pts, axis Δ{axisAngle:F0}°, " +
+                              $"moved {Mathf.Max(moveShoulder, moveWrist) * 100f:F1} cm" +
+                              (alongApplied ? "" : ", along kept (span mismatch)");
+            Debug.Log($"[ArmManager] Depth snap at freeze: {_axisFilteredPoints.Count}/{hitCount} pts, " +
+                      $"axis Δ{axisAngle:F1}°, shoulder moved {moveShoulder * 100f:F1} cm, " +
+                      $"wrist moved {moveWrist * 100f:F1} cm, " +
+                      $"along-axis {(alongApplied ? "recentred on cloud" : $"kept from keypoints (cloud {cloudLen:F2} m vs span {spanLen:F2} m)")}.");
+        }
+
         private bool TryEstimateArmAxisFromDepth(Rect imageBounds, out Vector3 endA, out Vector3 endB)
         {
             endA = endB = default;
@@ -1760,65 +1986,14 @@ namespace ARArmDetection
             _axisCacheBounds = imageBounds;
             _axisCacheResult = false;
 
-            int grid = _depthSampleGrid;
-            // Shrink sampling inward from the box edges so background pixels (where the box
-            // slightly overshoots the real arm silhouette) don't get raycasted.
-            float padX = imageBounds.width * 0.1f;
-            float padY = imageBounds.height * 0.1f;
-
-            var hits = _axisHits;
-            hits.Clear();
-            for (int gx = 0; gx < grid; gx++)
+            if (!TryFitArmAxisFromDepth(imageBounds, _depthSampleGrid,
+                                        out Vector3 centroid, out Vector3 axis, out int hitCount))
             {
-                float u = grid > 1 ? gx / (float)(grid - 1) : 0.5f;
-                float px = Mathf.Lerp(imageBounds.xMin + padX, imageBounds.xMax - padX, u);
-
-                for (int gy = 0; gy < grid; gy++)
-                {
-                    float v = grid > 1 ? gy / (float)(grid - 1) : 0.5f;
-                    float py = Mathf.Lerp(imageBounds.yMin + padY, imageBounds.yMax - padY, v);
-
-                    var ray = _cameraSource.ImagePointToRay(new Vector2(px, py));
-                    if (_depthRaycaster.Raycast(ray, out var hit, _maxDepthMeters))
-                        hits.Add(hit.point);
-                }
-            }
-
-            if (hits.Count < 6)
-            {
-                DepthAxisStatus = $"Only {hits.Count}/{grid * grid} depth samples hit this frame (<6 needed)";
+                DepthAxisStatus = $"Only {hitCount}/{_depthSampleGrid * _depthSampleGrid} depth " +
+                                  "samples hit this frame (<6 needed)";
                 return false;
             }
-
-            // Outlier rejection: keep points near the median depth so any background pixels
-            // that slipped through don't skew the axis away from the true arm surface.
-            Vector3 camPos = _cameraSource.CameraPose.position;
-            var depths = _axisDepths;
-            depths.Clear();
-            foreach (var h in hits) depths.Add(Vector3.Distance(camPos, h));
-            depths.Sort();
-            float medianDepth = depths[depths.Count / 2];
-
-            var filtered = _axisFilteredPoints;
-            filtered.Clear();
-            foreach (var h in hits)
-                if (Mathf.Abs(Vector3.Distance(camPos, h) - medianDepth) < 0.15f)
-                    filtered.Add(h);
-            if (filtered.Count < 5) filtered = hits;
-
-            Vector3 centroid = Vector3.zero;
-            foreach (var p in filtered) centroid += p;
-            centroid /= filtered.Count;
-
-            float xx = 0f, xy = 0f, xz = 0f, yy = 0f, yz = 0f, zz = 0f;
-            foreach (var p in filtered)
-            {
-                Vector3 d = p - centroid;
-                xx += d.x * d.x; xy += d.x * d.y; xz += d.x * d.z;
-                yy += d.y * d.y; yz += d.y * d.z; zz += d.z * d.z;
-            }
-
-            Vector3 axis = DominantEigenvector(xx, xy, xz, yy, yz, zz);
+            var filtered = _axisFilteredPoints;   // inlier cloud left behind by the fit
 
             float minProj = float.MaxValue, maxProj = float.MinValue;
             Vector3 minPt = centroid, maxPt = centroid;
@@ -1849,7 +2024,7 @@ namespace ARArmDetection
             _axisCacheResult = true;
             _axisCacheEndA = endA;
             _axisCacheEndB = endB;
-            DepthAxisStatus = $"OK - {filtered.Count}/{hits.Count} samples, axis length {Vector3.Distance(endA, endB):F2} m";
+            DepthAxisStatus = $"OK - {filtered.Count}/{hitCount} samples, axis length {Vector3.Distance(endA, endB):F2} m";
             return true;
         }
 
