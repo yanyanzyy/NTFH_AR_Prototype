@@ -3610,7 +3610,7 @@ MonoBehaviour:
   _armOnlyWorldSmoothing: 0.9
   _customDetectorEveryNFrames: 1
   _disableTargetLock: 0
-  _acquireConsistentFrames: 4
+  _acquireConsistentFrames: 3
   _acquireRadiusMeters: 0.3
   _acquireMinConfidence: 0.4
   _acquireGapToleranceSeconds: 0.6
