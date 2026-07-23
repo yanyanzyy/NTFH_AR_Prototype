@@ -22,6 +22,10 @@ how far, in pixels, a predicted keypoint sits from the true one. That is
 summarized as PCK (percentage of correct keypoints) at several tolerances
 expressed as a fraction of the arm's own length, so it is scale-invariant.
 
+Box localization is additionally summarized as mean IoU over matched instances
+(the overlap quality behind the detection mAP), and keypoint localization as
+mean OKS, the keypoint-space analog of IoU where 1.0 is a perfect prediction.
+
 Outputs land in runs/<run>/evaluation/:
     summary.md          human-readable report
     metrics.csv         one row, machine-readable
@@ -44,6 +48,12 @@ RUNS = HERE.parent / "runs"
 
 PCK_THRESHOLDS = (0.05, 0.10, 0.20)
 KPT_NAMES = ("kpt0 (proximal)", "kpt1 (distal)")
+
+# Object Keypoint Similarity falloff. COCO derives a per-keypoint constant from
+# hand-annotation variance; there is no such calibration for a 2-point arm, so
+# this is a single reasonable stand-in (~mid-range of COCO's k). Larger is more
+# forgiving. OKS is the keypoint analog of box IoU: 1.0 is a perfect prediction.
+OKS_KAPPA = 0.10
 
 
 def visible_keypoints(text: str) -> bool:
@@ -110,9 +120,11 @@ def iou(a, b):
 
 
 def keypoint_errors(model, subset: Path, split: str):
-    """Per-keypoint error, normalized by the ground-truth arm length."""
+    """Per-keypoint error (normalized by arm length), matched-box IoU and OKS."""
     err_px = [[], []]
     err_rel = [[], []]
+    box_iou = []
+    oks = []
     matched = missed = 0
 
     for img_path in sorted((subset / "images" / split).iterdir()):
@@ -141,12 +153,19 @@ def keypoint_errors(model, subset: Path, split: str):
                 missed += 1
                 continue
             matched += 1
+            box_iou.append(best_iou)
+            # OKS scale is the object area (COCO convention: s^2 = box area).
+            scale2 = max(1.0, (gt_box[2] - gt_box[0]) * (gt_box[3] - gt_box[1]))
+            terms = []
             for j, gp in enumerate((g0, g1)):
                 d = float(np.linalg.norm(kpts[best][j] - gp))
                 err_px[j].append(d)
                 err_rel[j].append(d / arm_len)
+                terms.append(np.exp(-(d * d) / (2 * scale2 * OKS_KAPPA ** 2)))
+            oks.append(float(np.mean(terms)))
 
-    return ([np.array(e) for e in err_px], [np.array(e) for e in err_rel], matched, missed)
+    return ([np.array(e) for e in err_px], [np.array(e) for e in err_rel],
+            np.array(box_iou), np.array(oks), matched, missed)
 
 
 def plot_errors(err_rel, out: Path):
@@ -239,7 +258,7 @@ def main():
     kpt = model.val(data=str(subset / "data.yaml"), split=args.split,
                     imgsz=args.imgsz, plots=False, verbose=False)
 
-    err_px, err_rel, matched, missed = keypoint_errors(model, subset, args.split)
+    err_px, err_rel, box_iou, oks, matched, missed = keypoint_errors(model, subset, args.split)
     allpx = np.concatenate([e for e in err_px if len(e)]) if any(len(e) for e in err_px) else np.array([])
     allrel = np.concatenate([e for e in err_rel if len(e)]) if any(len(e) for e in err_rel) else np.array([])
 
@@ -253,16 +272,22 @@ def main():
         "images_total": n_full,
         "images_with_keypoints": n_kpt,
         "box_mAP50": round(float(full.box.map50), 4),
+        "box_mAP75": round(float(full.box.map75), 4),
         "box_mAP50_95": round(float(full.box.map), 4),
         "box_precision": round(float(full.box.mp), 4),
         "box_recall": round(float(full.box.mr), 4),
+        "box_iou_mean": round(float(box_iou.mean()), 4) if len(box_iou) else None,
+        "box_iou_median": round(float(np.median(box_iou)), 4) if len(box_iou) else None,
         "pose_mAP50": round(float(kpt.pose.map50), 4),
+        "pose_mAP75": round(float(kpt.pose.map75), 4),
         "pose_mAP50_95": round(float(kpt.pose.map), 4),
         "instances_matched": matched,
         "instances_missed": missed,
         "kpt_err_median_px": round(float(np.median(allpx)), 2) if len(allpx) else None,
         "kpt_err_mean_px": round(float(allpx.mean()), 2) if len(allpx) else None,
+        "kpt_err_rmse_px": round(float(np.sqrt((allpx ** 2).mean())), 2) if len(allpx) else None,
         "kpt_err_p90_px": round(float(np.percentile(allpx, 90)), 2) if len(allpx) else None,
+        "oks_mean": round(float(oks.mean()), 4) if len(oks) else None,
         **{f"PCK@{int(t*100)}": round(pck[t], 4) for t in PCK_THRESHOLDS},
     }
     (out_dir / "metrics.csv").write_text(
@@ -276,20 +301,23 @@ def main():
         "",
         "## Detection (all images in split)",
         "",
-        f"| images | mAP50 | mAP50-95 | precision | recall |",
-        f"|---|---|---|---|---|",
-        f"| {n_full} | {row['box_mAP50']} | {row['box_mAP50_95']} | "
+        f"| images | mAP50 | mAP75 | mAP50-95 | precision | recall |",
+        f"|---|---|---|---|---|---|",
+        f"| {n_full} | {row['box_mAP50']} | {row['box_mAP75']} | {row['box_mAP50_95']} | "
         f"{row['box_precision']} | {row['box_recall']} |",
+        "",
+        "Mean box IoU over matched instances (from the pose subset): "
+        f"**{row['box_iou_mean']}** (median {row['box_iou_median']}).",
         "",
         "## Pose (keypoint-labeled images only)",
         "",
         f"Scored on {n_kpt} of {n_full} images. The rest carry placeholder keypoints",
         "at visibility 0 and cannot be scored; including them understates pose mAP.",
         "",
-        f"| images | mAP50 | mAP50-95 | matched | missed | detection rate |",
-        f"|---|---|---|---|---|---|",
-        f"| {n_kpt} | {row['pose_mAP50']} | {row['pose_mAP50_95']} | "
-        f"{matched} | {missed} | {det:.1f}% |",
+        f"| images | mAP50 | mAP75 | mAP50-95 | mean OKS | matched | missed | detection rate |",
+        f"|---|---|---|---|---|---|---|---|",
+        f"| {n_kpt} | {row['pose_mAP50']} | {row['pose_mAP75']} | {row['pose_mAP50_95']} | "
+        f"{row['oks_mean']} | {matched} | {missed} | {det:.1f}% |",
         "",
         "## Keypoint localization error",
         "",
@@ -297,6 +325,7 @@ def main():
         f"|---|---|",
         f"| median error | {row['kpt_err_median_px']} px |",
         f"| mean error | {row['kpt_err_mean_px']} px |",
+        f"| RMSE | {row['kpt_err_rmse_px']} px |",
         f"| 90th percentile | {row['kpt_err_p90_px']} px |",
     ]
     for t in PCK_THRESHOLDS:
@@ -311,8 +340,10 @@ def main():
     (out_dir / "summary.md").write_text("\n".join(lines))
 
     print(f"\nWrote {out_dir}")
-    print(f"  detection : mAP50={row['box_mAP50']}  mAP50-95={row['box_mAP50_95']}  ({n_full} images)")
-    print(f"  pose      : mAP50={row['pose_mAP50']}  mAP50-95={row['pose_mAP50_95']}  ({n_kpt} images)")
+    print(f"  detection : mAP50={row['box_mAP50']}  mAP50-95={row['box_mAP50_95']}  "
+          f"IoU={row['box_iou_mean']}  ({n_full} images)")
+    print(f"  pose      : mAP50={row['pose_mAP50']}  mAP50-95={row['pose_mAP50_95']}  "
+          f"OKS={row['oks_mean']}  ({n_kpt} images)")
     if len(allpx):
         print(f"  keypoints : median {row['kpt_err_median_px']}px  "
               f"PCK@10%={100*pck[0.10]:.1f}%  detection rate {det:.1f}%")

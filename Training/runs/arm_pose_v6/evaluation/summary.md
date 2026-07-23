@@ -4,18 +4,20 @@ Weights: `C:\Github Desktop\NTFH_AR_Prototype\Training\runs\arm_pose_v6\weights\
 
 ## Detection (all images in split)
 
-| images | mAP50 | mAP50-95 | precision | recall |
-|---|---|---|---|---|
-| 2044 | 0.9674 | 0.8814 | 0.9487 | 0.921 |
+| images | mAP50 | mAP75 | mAP50-95 | precision | recall |
+|---|---|---|---|---|---|
+| 2044 | 0.9674 | 0.9147 | 0.8814 | 0.9487 | 0.921 |
+
+Mean box IoU over matched instances (from the pose subset): **0.7233** (median 0.7399).
 
 ## Pose (keypoint-labeled images only)
 
 Scored on 263 of 2044 images. The rest carry placeholder keypoints
 at visibility 0 and cannot be scored; including them understates pose mAP.
 
-| images | mAP50 | mAP50-95 | matched | missed | detection rate |
-|---|---|---|---|---|---|
-| 263 | 0.8986 | 0.8069 | 169 | 94 | 64.3% |
+| images | mAP50 | mAP75 | mAP50-95 | mean OKS | matched | missed | detection rate |
+|---|---|---|---|---|---|---|---|
+| 263 | 0.8986 | 0.8357 | 0.8069 | 0.5288 | 169 | 94 | 64.3% |
 
 ## Keypoint localization error
 
@@ -23,6 +25,7 @@ at visibility 0 and cannot be scored; including them understates pose mAP.
 |---|---|
 | median error | 17.88 px |
 | mean error | 20.62 px |
+| RMSE | 24.75 px |
 | 90th percentile | 38.78 px |
 | PCK@5% of arm length | 32.2% |
 | PCK@10% of arm length | 66.9% |

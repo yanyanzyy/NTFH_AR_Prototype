@@ -1,2 +1,2 @@
-run,split,images_total,images_with_keypoints,box_mAP50,box_mAP50_95,box_precision,box_recall,pose_mAP50,pose_mAP50_95,instances_matched,instances_missed,kpt_err_median_px,kpt_err_mean_px,kpt_err_p90_px,PCK@5,PCK@10,PCK@20
-arm_pose_v5,test,2044,263,0.9734,0.9047,0.9617,0.9328,0.9257,0.8173,191,72,15.11,17.86,32.29,0.3482,0.7356,0.945
+run,split,images_total,images_with_keypoints,box_mAP50,box_mAP75,box_mAP50_95,box_precision,box_recall,box_iou_mean,box_iou_median,pose_mAP50,pose_mAP75,pose_mAP50_95,instances_matched,instances_missed,kpt_err_median_px,kpt_err_mean_px,kpt_err_rmse_px,kpt_err_p90_px,oks_mean,PCK@5,PCK@10,PCK@20
+arm_pose_v5,test,2044,263,0.9734,0.9375,0.9047,0.9617,0.9328,0.7604,0.7744,0.9257,0.8269,0.8173,191,72,15.11,17.86,21.44,32.29,0.5851,0.3482,0.7356,0.945
