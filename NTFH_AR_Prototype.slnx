@@ -4,5 +4,4 @@
   <Project Path="Assembly-CSharp.csproj" />
   <Project Path="Mediapipe.Tests.EditMode.csproj" />
   <Project Path="Assembly-CSharp-Editor.csproj" />
-  <Project Path="Mediapipe.Tutorial.csproj" />
 </Solution>
